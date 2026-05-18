@@ -1,9 +1,1 @@
-* text=auto
-
-*.go text eol=lf
-*.md text eol=lf
-*.json text eol=lf
-
-.gitattributes text eol=lf
-.editorconfig text eol=lf
-.vscode/settings.json text eol=lf
+* text=auto eol=lf
