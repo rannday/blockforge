@@ -1,4 +1,4 @@
-// Package serverinstaller provides the Varda Minecraft server installer and updater.
+// Package serverinstaller provides the Blockforge Minecraft server installer and updater.
 package serverinstaller
 
 import (
@@ -13,7 +13,7 @@ type Options struct {
 	Force           bool
 	DownloadWorkers int
 	TargetDir       string
-	ManifestURL     string
+	ManifestSource  string
 	CheckManifest   bool
 	VersionOnly     bool
 	Help            bool
@@ -33,7 +33,16 @@ func Run(args []string) error {
 		return nil
 	}
 
-	manifest, err := FetchRemoteManifest(opts.ManifestURL)
+	if opts.TargetDir == "" {
+		opts.TargetDir = "."
+	}
+
+	manifestSource, err := resolveManifestSource(opts.TargetDir, opts.ManifestSource)
+	if err != nil {
+		return err
+	}
+
+	manifest, err := FetchRemoteManifest(manifestSource)
 	if err != nil {
 		return err
 	}
@@ -47,22 +56,38 @@ func Run(args []string) error {
 		return nil
 	}
 
-	if err := RequireJava21(); err != nil {
+	if err := validateLoaderImplemented(manifest.Loader); err != nil {
 		return err
 	}
 
-	if opts.TargetDir == "" {
-		opts.TargetDir = "."
+	if err := RequireJava21(); err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(opts.TargetDir, 0o755); err != nil {
 		return fmt.Errorf("create target dir: %w", err)
 	}
 
-	if err := installServerConfig(opts.TargetDir, manifest); err != nil {
+	if opts.ManifestSource != "" {
+		if err := saveManifestURL(opts.TargetDir, manifestSource); err != nil {
+			return err
+		}
+	}
+
+	previousVersion, err := readSavedManifestVersion(opts.TargetDir)
+	if err != nil {
 		return err
 	}
-	desiredNeoForgeVersion, err := InstallOrUpdateNeoForge(opts.TargetDir, manifest.Loader, opts.Force)
+	applyServerConfig := shouldApplyServerConfig(opts.Force, previousVersion, manifest.Version)
+	if applyServerConfig {
+		if err := installServerConfig(opts.TargetDir, manifest); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("Server config already applied for manifest version %s; skipping.\n", manifest.Version)
+	}
+
+	loaderVersion, err := InstallOrUpdateLoader(opts.TargetDir, manifest.Loader, opts.Force)
 	if err != nil {
 		return err
 	}
@@ -70,7 +95,7 @@ func Run(args []string) error {
 	if err := WriteJvmArgs(opts.TargetDir, opts.Force); err != nil {
 		return err
 	}
-	if err := PatchLaunchers(opts.TargetDir, desiredNeoForgeVersion); err != nil {
+	if err := PatchLaunchers(opts.TargetDir, loaderVersion); err != nil {
 		return err
 	}
 	if err := cleanupNeoForgeInstallerArtifacts(opts.TargetDir); err != nil {
@@ -82,6 +107,9 @@ func Run(args []string) error {
 	}
 
 	if err := WriteInstallDiagnostics(opts.TargetDir, manifest); err != nil {
+		return err
+	}
+	if err := writeSavedManifestVersion(opts.TargetDir, manifest.Version); err != nil {
 		return err
 	}
 
@@ -101,12 +129,17 @@ func parseOptions(args []string) (Options, error) {
 	fs.BoolVar(&opts.Help, "h", false, "print help")
 	fs.BoolVar(&opts.VersionOnly, "version", false, "print installer version and exit")
 	fs.BoolVar(&opts.VersionOnly, "v", false, "print installer version and exit")
-	fs.BoolVar(&opts.CheckManifest, "check-manifest", false, "validate the remote manifest and print a summary without changing files")
+	fs.BoolVar(&opts.CheckManifest, "check-manifest", false, "validate the manifest and print a summary without changing files")
+	fs.BoolVar(&opts.CheckManifest, "c", false, "validate the manifest and print a summary without changing files")
 	fs.StringVar(&opts.TargetDir, "dir", ".", "server install directory")
 	fs.StringVar(&opts.TargetDir, "d", ".", "server install directory")
 	fs.BoolVar(&opts.Force, "force", false, "re-download/reinstall files")
 	fs.BoolVar(&opts.Force, "f", false, "re-download/reinstall files")
-	fs.StringVar(&opts.ManifestURL, "manifest-url", defaultManifestURL, "remote manifest URL")
+	fs.StringVar(&opts.ManifestSource, "manifest", "", "manifest source URL or local path")
+	fs.StringVar(&opts.ManifestSource, "m", "", "manifest source URL or local path")
+	fs.StringVar(&opts.ManifestSource, "manifest-url", "", "deprecated manifest URL alias")
+	fs.IntVar(&opts.DownloadWorkers, "workers", 6, "mod download worker count")
+	fs.IntVar(&opts.DownloadWorkers, "w", 6, "mod download worker count")
 	fs.IntVar(&opts.DownloadWorkers, "download-workers", 6, "mod download worker count")
 
 	if err := fs.Parse(args); err != nil {
@@ -123,7 +156,7 @@ func parseOptions(args []string) (Options, error) {
 	}
 
 	if opts.DownloadWorkers < 1 || opts.DownloadWorkers > 16 {
-		return opts, fmt.Errorf("--download-workers must be between 1 and 16")
+		return opts, fmt.Errorf("--workers must be between 1 and 16")
 	}
 
 	return opts, nil
@@ -132,17 +165,16 @@ func parseOptions(args []string) (Options, error) {
 func printInstallerUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: blockforge [options]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Install or update a Minecraft server from the remote manifest.")
+	fmt.Fprintln(w, "Install or update a modded Minecraft server from a manifest.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Options:")
-	fmt.Fprintln(w, "  -h, --help                 Show this help text and exit")
-	fmt.Fprintln(w, "  -v, --version              Print installer version and exit")
-	fmt.Fprintln(w, "      --check-manifest       Validate remote manifest and print summary without changing files")
+	fmt.Fprintln(w, "  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)")
 	fmt.Fprintln(w, "  -d, --dir DIR              Server install directory (default: .)")
+	fmt.Fprintln(w, "  -c, --check-manifest       Validate manifest and print a summary without changing files")
 	fmt.Fprintln(w, "  -f, --force                Re-download/reinstall files instead of keeping existing files")
-	fmt.Fprintln(w, "      --manifest-url URL     Remote manifest URL")
-	fmt.Fprintln(w, "      --download-workers N   Concurrent mod download workers (default: 6, range: 1-16)")
+	fmt.Fprintln(w, "  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)")
+	fmt.Fprintln(w, "  -v, --version              Print installer version and exit")
+	fmt.Fprintln(w, "  -h, --help                 Show this help text and exit")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Default manifest URL:")
-	fmt.Fprintln(w, "  https://rannday.github.io/blockforge-manifest/manifest.json")
+	fmt.Fprintln(w, "First install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.")
 }

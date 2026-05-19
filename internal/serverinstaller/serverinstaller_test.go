@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -255,10 +256,65 @@ func TestManifestValidateRejectsUnsupportedLoaderType(t *testing.T) {
 	t.Parallel()
 
 	manifest := validTestManifest()
-	manifest.Loader.Type = "forge"
+	manifest.Loader.Type = "badloader"
 
 	if err := manifest.Validate(); err == nil || !strings.Contains(strings.ToLower(err.Error()), "loader.type") {
 		t.Fatalf("Validate() error = %v, want loader type rejection", err)
+	}
+}
+
+func TestManifestValidateAcceptsSchemaRecognizedLoaderTypes(t *testing.T) {
+	t.Parallel()
+
+	for _, loaderType := range []string{"neoforge", "forge", "fabric", "quilt"} {
+		loaderType := loaderType
+		t.Run(loaderType, func(t *testing.T) {
+			t.Parallel()
+
+			manifest := validTestManifest()
+			manifest.Loader.Type = loaderType
+
+			if err := manifest.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadManifestFromBytesRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "top-level",
+			raw:  strings.Replace(validManifestJSON(), `"mods": [`, `"unexpected": true, "mods": [`, 1),
+		},
+		{
+			name: "loader",
+			raw:  strings.Replace(validManifestJSON(), `"installer_url":`, `"extra": true, "installer_url":`, 1),
+		},
+		{
+			name: "server_config",
+			raw:  strings.Replace(validManifestJSON(), `"server_config": {`, `"server_config": {"extra": true,`, 1),
+		},
+		{
+			name: "mod",
+			raw:  strings.Replace(validManifestJSON(), `"website_url":`, `"extra": true, "website_url":`, 1),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := LoadManifestFromBytes([]byte(tc.raw)); err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown field") {
+				t.Fatalf("LoadManifestFromBytes() error = %v, want unknown field", err)
+			}
+		})
 	}
 }
 
@@ -363,21 +419,198 @@ func TestWriteInstallDiagnosticsWritesOnlyDiagnostics(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		filepath.Join(root, ".varda", "pack-version.txt"),
-		filepath.Join(root, ".varda", "installer-version.txt"),
+		filepath.Join(root, ".blockforge", "pack-version.txt"),
+		filepath.Join(root, ".blockforge", "installer-version.txt"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected diagnostic file %s: %v", path, err)
 		}
 	}
 	for _, path := range []string{
-		filepath.Join(root, ".varda", "manifest.json"),
-		filepath.Join(root, ".varda", "mods-list.txt"),
-		filepath.Join(root, ".varda", "neoforge-url.txt"),
+		filepath.Join(root, ".blockforge", "manifest.json"),
+		filepath.Join(root, ".blockforge", "mods-list.txt"),
+		filepath.Join(root, ".blockforge", "neoforge-url.txt"),
 	} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("unexpected persisted file %s: %v", path, err)
 		}
+	}
+}
+
+func TestResolveManifestSourceUsesCLIAndSavedSource(t *testing.T) {
+	root := t.TempDir()
+	savedURL := "https://example.invalid/old.json"
+	cliURL := "https://example.invalid/new.json"
+
+	if err := saveManifestURL(root, savedURL); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveManifestSource(root, "")
+	if err != nil {
+		t.Fatalf("resolveManifestSource() error = %v", err)
+	}
+	if got != savedURL {
+		t.Fatalf("resolveManifestSource() = %q, want saved source", got)
+	}
+
+	got, err = resolveManifestSource(root, cliURL)
+	if err != nil {
+		t.Fatalf("resolveManifestSource() CLI error = %v", err)
+	}
+	if got != cliURL {
+		t.Fatalf("resolveManifestSource() = %q, want CLI source", got)
+	}
+
+	if err := saveManifestURL(root, cliURL); err != nil {
+		t.Fatal(err)
+	}
+	got, err = resolveManifestSource(root, "")
+	if err != nil {
+		t.Fatalf("resolveManifestSource() updated error = %v", err)
+	}
+	if got != cliURL {
+		t.Fatalf("resolveManifestSource() = %q, want updated saved source", got)
+	}
+}
+
+func TestResolveManifestSourceRequiresSourceOnFirstInstall(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "missing")
+	if _, err := resolveManifestSource(root, ""); err == nil || !strings.Contains(err.Error(), "manifest URL required on first install") {
+		t.Fatalf("resolveManifestSource() error = %v, want first-install error", err)
+	}
+}
+
+func TestNormalizeManifestSource(t *testing.T) {
+	t.Parallel()
+
+	relative := filepath.Join("testdata", "manifest.json")
+	relativeAbs, err := filepath.Abs(relative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolutePath := filepath.Join(t.TempDir(), "blockforge-manifest.json")
+
+	cases := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "relative path",
+			raw:  relative,
+			want: pathToFileURL(relativeAbs),
+		},
+		{
+			name: "absolute path",
+			raw:  absolutePath,
+			want: pathToFileURL(absolutePath),
+		},
+		{
+			name: "file URL",
+			raw:  "file:///tmp/blockforge-manifest.json",
+			want: "file:///tmp/blockforge-manifest.json",
+		},
+		{
+			name: "https URL",
+			raw:  "https://example.invalid/manifest.json",
+			want: "https://example.invalid/manifest.json",
+		},
+		{
+			name:    "unsupported scheme",
+			raw:     "ftp://example.invalid/manifest.json",
+			wantErr: "unsupported manifest source scheme: ftp",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := normalizeManifestSource(tc.raw)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("normalizeManifestSource() error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeManifestSource() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("normalizeManifestSource() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeManifestSourceUnixAbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix absolute path normalization is runtime-specific")
+	}
+
+	got, err := normalizeManifestSource("/tmp/blockforge-manifest.json")
+	if err != nil {
+		t.Fatalf("normalizeManifestSource() error = %v", err)
+	}
+	want := "file:///tmp/blockforge-manifest.json"
+	if got != want {
+		t.Fatalf("normalizeManifestSource() = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeManifestSourceWindowsDrivePath(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows drive path normalization is runtime-specific")
+	}
+
+	got, err := normalizeManifestSource(`C:\Users\rannd\Downloads\varda-test-ars-manifest.json`)
+	if err != nil {
+		t.Fatalf("normalizeManifestSource() error = %v", err)
+	}
+	want := "file:///C:/Users/rannd/Downloads/varda-test-ars-manifest.json"
+	if got != want {
+		t.Fatalf("normalizeManifestSource() = %q, want %q", got, want)
+	}
+}
+
+func TestSavedManifestVersionHelpersAndDecision(t *testing.T) {
+	root := t.TempDir()
+
+	got, err := readSavedManifestVersion(root)
+	if err != nil {
+		t.Fatalf("readSavedManifestVersion() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("readSavedManifestVersion() = %q, want empty", got)
+	}
+	if !shouldApplyServerConfig(false, got, "1.0.0") {
+		t.Fatalf("first install should apply server config")
+	}
+
+	if err := writeSavedManifestVersion(root, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = readSavedManifestVersion(root)
+	if err != nil {
+		t.Fatalf("readSavedManifestVersion() error = %v", err)
+	}
+	if shouldApplyServerConfig(false, got, "1.0.0") {
+		t.Fatalf("same version should skip server config")
+	}
+	if !shouldApplyServerConfig(false, got, "1.0.1") {
+		t.Fatalf("changed version should apply server config")
+	}
+	if !shouldApplyServerConfig(true, got, "1.0.0") {
+		t.Fatalf("--force should apply server config")
 	}
 }
 
@@ -392,7 +625,7 @@ func TestCheckManifestDoesNotRequireTargetDirOrCreateIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Run([]string{"--dir", root, "--manifest-url", fileURL(manifestPath), "--check-manifest"}); err != nil {
+	if err := Run([]string{"--dir", root, "--manifest", manifestPath, "--check-manifest"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -412,7 +645,7 @@ func TestCheckAcceptsSimplifiedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Run([]string{"--dir", root, "--manifest-url", fileURL(manifestPath), "--check-manifest"}); err != nil {
+	if err := Run([]string{"--dir", root, "-m", manifestPath, "-c"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 }
@@ -420,7 +653,7 @@ func TestCheckAcceptsSimplifiedManifest(t *testing.T) {
 func TestParseOptionsSupportsAliases(t *testing.T) {
 	t.Parallel()
 
-	opts, err := parseOptions([]string{"-d", "srv", "-f", "-v", "--check-manifest", "--manifest-url", "https://example.invalid/manifest.json", "--download-workers", "3"})
+	opts, err := parseOptions([]string{"-d", "srv", "-f", "-v", "-c", "-m", "https://example.invalid/manifest.json", "-w", "3"})
 	if err != nil {
 		t.Fatalf("parseOptions() error = %v", err)
 	}
@@ -436,11 +669,53 @@ func TestParseOptionsSupportsAliases(t *testing.T) {
 	if !opts.CheckManifest {
 		t.Fatalf("parseOptions() CheckManifest = false, want true")
 	}
-	if opts.ManifestURL != "https://example.invalid/manifest.json" {
-		t.Fatalf("parseOptions() ManifestURL = %q, want %q", opts.ManifestURL, "https://example.invalid/manifest.json")
+	if opts.ManifestSource != "https://example.invalid/manifest.json" {
+		t.Fatalf("parseOptions() ManifestSource = %q, want %q", opts.ManifestSource, "https://example.invalid/manifest.json")
 	}
 	if opts.DownloadWorkers != 3 {
 		t.Fatalf("parseOptions() DownloadWorkers = %d, want 3", opts.DownloadWorkers)
+	}
+}
+
+func TestParseOptionsSupportsDeprecatedAliases(t *testing.T) {
+	t.Parallel()
+
+	opts, err := parseOptions([]string{"--manifest-url", "https://example.invalid/manifest.json", "--download-workers", "4"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.ManifestSource != "https://example.invalid/manifest.json" {
+		t.Fatalf("parseOptions() ManifestSource = %q, want deprecated manifest alias", opts.ManifestSource)
+	}
+	if opts.DownloadWorkers != 4 {
+		t.Fatalf("parseOptions() DownloadWorkers = %d, want 4", opts.DownloadWorkers)
+	}
+}
+
+func TestParseOptionsSupportsManifestAndWorkersLongFlags(t *testing.T) {
+	t.Parallel()
+
+	opts, err := parseOptions([]string{"--manifest", "https://example.invalid/manifest.json", "--workers", "5"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.ManifestSource != "https://example.invalid/manifest.json" {
+		t.Fatalf("parseOptions() ManifestSource = %q, want manifest source", opts.ManifestSource)
+	}
+	if opts.DownloadWorkers != 5 {
+		t.Fatalf("parseOptions() DownloadWorkers = %d, want 5", opts.DownloadWorkers)
+	}
+}
+
+func TestParseOptionsSupportsCheckManifestShortFlag(t *testing.T) {
+	t.Parallel()
+
+	opts, err := parseOptions([]string{"-c"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if !opts.CheckManifest {
+		t.Fatalf("parseOptions() CheckManifest = false, want true")
 	}
 }
 
@@ -450,12 +725,18 @@ func TestInstallerUsageText(t *testing.T) {
 	var buf bytes.Buffer
 	printInstallerUsage(&buf)
 	got := buf.String()
-	want := "Usage: blockforge [options]\n\nInstall or update a Minecraft server from the remote manifest.\n\nOptions:\n  -h, --help                 Show this help text and exit\n  -v, --version              Print installer version and exit\n      --check-manifest       Validate remote manifest and print summary without changing files\n  -d, --dir DIR              Server install directory (default: .)\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n      --manifest-url URL     Remote manifest URL\n      --download-workers N   Concurrent mod download workers (default: 6, range: 1-16)\n\nDefault manifest URL:\n  https://rannday.github.io/blockforge-manifest/manifest.json\n"
+	want := "Usage: blockforge [options]\n\nInstall or update a modded Minecraft server from a manifest.\n\nOptions:\n  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)\n  -d, --dir DIR              Server install directory (default: .)\n  -c, --check-manifest       Validate manifest and print a summary without changing files\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)\n  -v, --version              Print installer version and exit\n  -h, --help                 Show this help text and exit\n\nFirst install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.\n"
 	if got != want {
 		t.Fatalf("usage text mismatch:\n--- got ---\n%s--- want ---\n%s", got, want)
 	}
 	if strings.Contains(got, "--check\n") {
 		t.Fatalf("usage text unexpectedly mentions hidden --check alias\n%s", got)
+	}
+	if strings.Contains(got, "Default manifest URL") {
+		t.Fatalf("usage text unexpectedly mentions default manifest URL\n%s", got)
+	}
+	if strings.Contains(got, "--manifest-url") || strings.Contains(got, "--download-workers") {
+		t.Fatalf("usage text unexpectedly mentions deprecated aliases\n%s", got)
 	}
 }
 
@@ -488,6 +769,46 @@ func TestExtractZipFileRejectsAbsolutePath(t *testing.T) {
 
 	if err := extractZipFile(zipPath, root); err == nil || !strings.Contains(strings.ToLower(err.Error()), "absolute") {
 		t.Fatalf("extractZipFile() error = %v, want absolute path rejection", err)
+	}
+}
+
+func TestExtractZipFileRejectsTooManyFiles(t *testing.T) {
+	root := t.TempDir()
+	zipPath := filepath.Join(root, "many.zip")
+	if err := writeManyFileTestZip(zipPath, maxServerConfigFiles+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := extractZipFile(zipPath, root); err == nil || !strings.Contains(strings.ToLower(err.Error()), "too many files") {
+		t.Fatalf("extractZipFile() error = %v, want file count limit", err)
+	}
+}
+
+func TestExtractZipFileRejectsSingleFileLimit(t *testing.T) {
+	root := t.TempDir()
+	zipPath := filepath.Join(root, "large-file.zip")
+	if err := writeTestZip(zipPath, map[string]string{"large.txt": "123456"}); err != nil {
+		t.Fatal(err)
+	}
+
+	withServerConfigZipLimits(t, zipExtractLimits{MaxFiles: maxServerConfigFiles, MaxSingleFileBytes: 5, MaxTotalBytes: maxServerConfigTotalBytes})
+
+	if err := extractZipFile(zipPath, root); err == nil || !strings.Contains(strings.ToLower(err.Error()), "single-file limit") {
+		t.Fatalf("extractZipFile() error = %v, want single-file limit", err)
+	}
+}
+
+func TestExtractZipFileRejectsTotalBytesLimit(t *testing.T) {
+	root := t.TempDir()
+	zipPath := filepath.Join(root, "total.zip")
+	if err := writeTestZip(zipPath, map[string]string{"a.txt": "1234", "b.txt": "5678"}); err != nil {
+		t.Fatal(err)
+	}
+
+	withServerConfigZipLimits(t, zipExtractLimits{MaxFiles: maxServerConfigFiles, MaxSingleFileBytes: maxServerConfigSingleFileBytes, MaxTotalBytes: 7})
+
+	if err := extractZipFile(zipPath, root); err == nil || !strings.Contains(strings.ToLower(err.Error()), "total extracted limit") {
+		t.Fatalf("extractZipFile() error = %v, want total limit", err)
 	}
 }
 
@@ -645,6 +966,22 @@ func TestInstallOrUpdateNeoForgeUsesDesiredManifest(t *testing.T) {
 	}
 	if got != desiredVersion {
 		t.Fatalf("InstallOrUpdateNeoForge() = %q, want %q", got, desiredVersion)
+	}
+}
+
+func TestInstallOrUpdateLoaderRejectsRecognizedUnimplementedLoaders(t *testing.T) {
+	t.Parallel()
+
+	for _, loaderType := range []string{"forge", "fabric", "quilt"} {
+		loaderType := loaderType
+		t.Run(loaderType, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := InstallOrUpdateLoader(t.TempDir(), LoaderManifest{Type: loaderType, Version: "1.0.0"}, false)
+			if err == nil || !strings.Contains(err.Error(), "recognized by the manifest schema but is not implemented") {
+				t.Fatalf("InstallOrUpdateLoader() error = %v, want not implemented", err)
+			}
+		})
 	}
 }
 
@@ -961,7 +1298,7 @@ func TestReplaceFilePropagatesStatErrors(t *testing.T) {
 	}
 }
 
-func TestParseOptionsDefaultDownloadWorkers(t *testing.T) {
+func TestParseOptionsDefaultWorkers(t *testing.T) {
 	t.Parallel()
 
 	opts, err := parseOptions(nil)
@@ -973,13 +1310,13 @@ func TestParseOptionsDefaultDownloadWorkers(t *testing.T) {
 	}
 }
 
-func TestParseOptionsRejectsInvalidDownloadWorkers(t *testing.T) {
+func TestParseOptionsRejectsInvalidWorkers(t *testing.T) {
 	t.Parallel()
 
-	if _, err := parseOptions([]string{"--download-workers", "0"}); err == nil {
+	if _, err := parseOptions([]string{"--workers", "0"}); err == nil {
 		t.Fatalf("parseOptions() accepted 0 workers")
 	}
-	if _, err := parseOptions([]string{"--download-workers", "17"}); err == nil {
+	if _, err := parseOptions([]string{"--workers", "17"}); err == nil {
 		t.Fatalf("parseOptions() accepted 17 workers")
 	}
 }
@@ -1012,6 +1349,34 @@ func validTestManifest() Manifest {
 	}
 }
 
+func validManifestJSON() string {
+	return `{
+  "schema_version": 1,
+  "pack": "testpack",
+  "version": "0.1.4",
+  "minecraft": "1.21.1",
+  "loader": {
+    "type": "neoforge",
+    "version": "21.1.228",
+    "installer_url": "https://example.invalid/neoforge-21.1.228-installer.jar",
+    "sha1": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "server_config": {
+    "url": "https://example.invalid/server-config.zip",
+    "sha1": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "mods": [
+    {
+      "name": "Example Mod",
+      "url": "https://example.invalid/example.jar",
+      "website_url": "https://example.invalid",
+      "sha1": "0123456789abcdef0123456789abcdef01234567",
+      "size": 1234
+    }
+  ]
+}`
+}
+
 func writeTestZip(path string, entries map[string]string) error {
 	file, err := os.Create(path)
 	if err != nil {
@@ -1035,6 +1400,41 @@ func writeTestZip(path string, entries map[string]string) error {
 		return err
 	}
 	return nil
+}
+
+func writeManyFileTestZip(path string, count int) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	zw := zip.NewWriter(file)
+	for i := 0; i < count; i++ {
+		writer, err := zw.Create("file-" + strconv.Itoa(i) + ".txt")
+		if err != nil {
+			zw.Close()
+			return err
+		}
+		if _, err := writer.Write([]byte("x")); err != nil {
+			zw.Close()
+			return err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func withServerConfigZipLimits(t *testing.T, limits zipExtractLimits) {
+	t.Helper()
+
+	old := serverConfigZipLimits
+	serverConfigZipLimits = limits
+	t.Cleanup(func() {
+		serverConfigZipLimits = old
+	})
 }
 
 func fileURL(path string) string {

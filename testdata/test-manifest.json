@@ -1,0 +1,25 @@
+{
+  "version": "0.1.15-test",
+  "pack": "blockforge-test",
+  "schema_version": 1,
+  "minecraft": "1.21.1",
+  "loader": {
+    "type": "neoforge",
+    "version": "21.1.229",
+    "installer_url": "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.229/neoforge-21.1.229-installer.jar",
+    "sha1": "7b6f8512bb5f6a2c5d83e3385016da9813d3589b"
+  },
+  "server_config": {
+    "url": "file://TESTDATA/blockforge-test-config-0.1.15.zip",
+    "sha1": "813f2cc7a417af4cea8f5eeb7c88752cee018374"
+  },
+  "mods": [
+    {
+      "name": "Ars Nouveau",
+      "url": "https://edge.forgecdn.net/files/8081/100/ars_nouveau-1.21.1-5.11.5.jar",
+      "website_url": "https://www.curseforge.com/minecraft/mc-mods/ars-nouveau",
+      "sha1": "202512e3a48c169ea4c68c85c2208f1813a92f26",
+      "size": 20693739
+    }
+  ]
+}

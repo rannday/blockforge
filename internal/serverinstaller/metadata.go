@@ -2,31 +2,138 @@ package serverinstaller
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 func packVersionPath(targetDir string) string {
-	return vardaFile(targetDir, "pack-version.txt")
+	return stateFile(targetDir, "pack-version.txt")
 }
 
 func installerVersionPath(targetDir string) string {
-	return vardaFile(targetDir, "installer-version.txt")
+	return stateFile(targetDir, "installer-version.txt")
 }
 
 func cacheDir(targetDir string) string {
-	return targetPath(targetDir, ".varda", "cache")
+	return targetPath(stateDir(targetDir), "cache")
 }
 
-func vardaDir(targetDir string) string {
-	return targetPath(targetDir, ".varda")
+func stateDir(targetDir string) string {
+	return targetPath(targetDir, ".blockforge")
 }
 
-func vardaFile(targetDir, name string) string {
-	return targetPath(vardaDir(targetDir), name)
+func stateFile(targetDir, name string) string {
+	return targetPath(stateDir(targetDir), name)
+}
+
+func savedManifestURLPath(targetDir string) string {
+	return stateFile(targetDir, "manifest-url")
+}
+
+func savedManifestVersionPath(targetDir string) string {
+	return stateFile(targetDir, "manifest-version")
+}
+
+func resolveManifestSource(targetDir, cliSource string) (string, error) {
+	cliSource = strings.TrimSpace(cliSource)
+	if cliSource != "" {
+		return normalizeManifestSource(cliSource)
+	}
+
+	data, err := os.ReadFile(savedManifestURLPath(targetDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("manifest URL required on first install; pass --manifest URL")
+		}
+		return "", fmt.Errorf("read saved manifest source: %w", err)
+	}
+
+	saved := strings.TrimSpace(string(data))
+	if saved == "" {
+		return "", fmt.Errorf("manifest URL required on first install; pass --manifest URL")
+	}
+	return normalizeManifestSource(saved)
+}
+
+func normalizeManifestSource(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+
+	parsed, err := url.Parse(raw)
+	if err == nil && parsed.Scheme != "" {
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https", "file":
+			return raw, nil
+		}
+		if len(parsed.Scheme) != 1 {
+			return "", fmt.Errorf("unsupported manifest source scheme: %s", parsed.Scheme)
+		}
+	}
+
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolve manifest path: %w", err)
+	}
+	return pathToFileURL(abs), nil
+}
+
+func pathToFileURL(path string) string {
+	slashes := filepath.ToSlash(path)
+	if len(slashes) >= 2 && slashes[1] == ':' {
+		slashes = "/" + slashes
+	}
+	return (&url.URL{
+		Scheme: "file",
+		Path:   slashes,
+	}).String()
+}
+
+func saveManifestURL(targetDir, manifestSource string) error {
+	manifestSource = strings.TrimSpace(manifestSource)
+	if manifestSource == "" {
+		return nil
+	}
+	if err := os.MkdirAll(stateDir(targetDir), 0o755); err != nil {
+		return fmt.Errorf("create blockforge state dir: %w", err)
+	}
+	if err := os.WriteFile(savedManifestURLPath(targetDir), []byte(manifestSource+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write saved manifest source: %w", err)
+	}
+	return nil
+}
+
+func readSavedManifestVersion(targetDir string) (string, error) {
+	data, err := os.ReadFile(savedManifestVersionPath(targetDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read saved manifest version: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func writeSavedManifestVersion(targetDir, version string) error {
+	version = strings.TrimSpace(version)
+	if err := os.MkdirAll(stateDir(targetDir), 0o755); err != nil {
+		return fmt.Errorf("create blockforge state dir: %w", err)
+	}
+	if err := os.WriteFile(savedManifestVersionPath(targetDir), []byte(version+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write saved manifest version: %w", err)
+	}
+	return nil
+}
+
+func shouldApplyServerConfig(force bool, savedVersion, manifestVersion string) bool {
+	return force || strings.TrimSpace(savedVersion) != strings.TrimSpace(manifestVersion)
 }
 
 func WriteInstallDiagnostics(targetDir string, manifest Manifest) error {
-	if err := os.MkdirAll(vardaDir(targetDir), 0o755); err != nil {
+	if err := os.MkdirAll(stateDir(targetDir), 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(packVersionPath(targetDir), []byte(manifest.Version+"\n"), 0o644); err != nil {

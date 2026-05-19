@@ -11,6 +11,39 @@ import (
 var javaCommand = exec.Command
 var downloadFile = downloadToFile
 
+func InstallOrUpdateLoader(targetDir string, desired LoaderManifest, force bool) (string, error) {
+	if err := validateLoaderImplemented(desired); err != nil {
+		return "", err
+	}
+
+	switch desired.Type {
+	case "neoforge":
+		return InstallOrUpdateNeoForge(targetDir, desired, force)
+	default:
+		return "", fmt.Errorf("unsupported manifest loader.type %q", desired.Type)
+	}
+}
+
+func validateLoaderImplemented(desired LoaderManifest) error {
+	switch desired.Type {
+	case "neoforge":
+		return nil
+	case "forge", "fabric", "quilt":
+		return fmt.Errorf("loader.type %q is recognized by the manifest schema but is not implemented by this blockforge version", desired.Type)
+	default:
+		return fmt.Errorf("unsupported manifest loader.type %q", desired.Type)
+	}
+}
+
+func isRecognizedLoaderType(loaderType string) bool {
+	switch loaderType {
+	case "neoforge", "forge", "fabric", "quilt":
+		return true
+	default:
+		return false
+	}
+}
+
 func InstallOrUpdateNeoForge(targetDir string, desired LoaderManifest, force bool) (string, error) {
 	if desired.Version == "" {
 		return "", fmt.Errorf("manifest loader.version must be non-empty")
@@ -44,7 +77,7 @@ func InstallOrUpdateNeoForge(targetDir string, desired LoaderManifest, force boo
 		fmt.Printf("Updating NeoForge to %s...\n", desiredVersion)
 	}
 
-	tempDir, err := os.MkdirTemp("", "varda-neoforge-")
+	tempDir, err := os.MkdirTemp("", "blockforge-neoforge-")
 	if err != nil {
 		return "", err
 	}

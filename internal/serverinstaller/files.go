@@ -16,7 +16,7 @@ func WriteJvmArgs(targetDir string, force bool) error {
 		}
 	}
 
-	const content = "# JVM memory settings for Varda.\n" +
+	const content = "# JVM memory settings for this server.\n" +
 		"# Adjust these based on available server RAM.\n" +
 		"-Xms4G\n" +
 		"-Xmx6G\n"

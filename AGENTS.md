@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repo is only standalone Varda server installer/updater.
+This repo is only standalone manifest-driven Minecraft server installer/updater.
 
 Do not add:
 
@@ -10,24 +10,20 @@ Do not add:
 - embedded modpack files or payload directories
 - raw release binary publishing
 
-Desired state comes from remote Varda modpack manifest:
-
-```text
-https://varda-dev.github.io/varda-modpack/manifest.json
-```
+Desired state comes from a manifest source passed on first install and saved under `.blockforge/manifest-url`.
 
 Keep CLI script-friendly. Preserve:
 
 - `--dir`
-- `--manifest-url`
-- `--check`
+- `--manifest` / `-m`
+- `--check-manifest` / `-c`
 - `--force`
-- `--download-workers`
+- `--workers` / `-w`
 - `--version`
 
-No offline mode. No skip modes. Normal run always fetches remote manifest and converges server to it.
+No offline mode. No skip modes. Normal run always reads the manifest source and converges server to it.
 Do not persist manifest-derived desired state files like `.varda/manifest.json`, `.varda/mods-list.txt`, or `.varda/neoforge-url.txt`.
-`--check` must not modify files and must not require target dir to exist.
+`--check-manifest` must not modify files and must not require target dir to exist.
 
 Go:
 

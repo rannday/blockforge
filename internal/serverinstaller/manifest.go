@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 
 	manifestcontract "github.com/rannday/blockforge/internal/manifest"
-)
-
-const (
-	defaultManifestURL = "https://rannday.github.io/blockforge-manifest/manifest.json"
 )
 
 type Manifest struct {
@@ -47,8 +44,12 @@ type ManifestMod struct {
 func LoadManifestFromBytes(data []byte) (Manifest, error) {
 	var manifest Manifest
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
 		return Manifest{}, fmt.Errorf("decode manifest: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return Manifest{}, fmt.Errorf("decode manifest: trailing JSON data")
 	}
 	manifest.normalize()
 	return manifest, nil
@@ -87,8 +88,8 @@ func (m Manifest) Validate() error {
 	if m.Loader.Type == "" {
 		return fmt.Errorf("manifest loader.type must be non-empty")
 	}
-	if m.Loader.Type != "neoforge" {
-		return fmt.Errorf("unsupported manifest loader.type %q (only neoforge is supported)", m.Loader.Type)
+	if !isRecognizedLoaderType(m.Loader.Type) {
+		return fmt.Errorf("unsupported manifest loader.type %q", m.Loader.Type)
 	}
 	if m.Loader.Version == "" {
 		return fmt.Errorf("manifest loader.version must be non-empty")
@@ -145,7 +146,7 @@ func validateRequiredArtifactURL(raw, label, suffix string) error {
 	if raw == "" {
 		return fmt.Errorf("%s must be non-empty", label)
 	}
-	if err := validateURLScheme(raw, label, "http", "https"); err != nil {
+	if err := validateURLScheme(raw, label, "http", "https", "file"); err != nil {
 		return err
 	}
 	filename, err := inferFilenameFromURL(raw)
