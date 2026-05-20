@@ -15,8 +15,8 @@ import (
 )
 
 func TestInstallAndUpdateFromPortableManifestFixture(t *testing.T) {
-	root := repoRoot(t, filepath.Join("..", "..", ".."))
-	manifestPath := patchPortableManifest(t, root, t.TempDir())
+	fixtureDir := fixtureDataDir(t)
+	manifestPath := patchPortableManifest(t, fixtureDir, t.TempDir())
 	installDir := filepath.Join(t.TempDir(), "server")
 
 	if err := serverinstaller.Run([]string{
@@ -67,24 +67,24 @@ func TestInstallAndUpdateFromPortableManifestFixture(t *testing.T) {
 	}
 }
 
-func repoRoot(t *testing.T, relFromPackage string) string {
+func fixtureDataDir(t *testing.T) string {
 	t.Helper()
 
-	root, err := filepath.Abs(relFromPackage)
+	dir, err := filepath.Abs(filepath.Join("..", "testsdata"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return root
+	return dir
 }
 
-func patchPortableManifest(t *testing.T, root, dstDir string) string {
+func patchPortableManifest(t *testing.T, fixtureDir, dstDir string) string {
 	t.Helper()
 
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "test-manifest.json"))
+	raw, err := os.ReadFile(filepath.Join(fixtureDir, "test-manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	testdataURL := fileURLFromPath(filepath.Join(root, "testdata")) + "/"
+	testdataURL := fileURLFromPath(fixtureDir) + "/"
 	patched := strings.ReplaceAll(string(raw), "file://TESTDATA/", testdataURL)
 	if strings.Contains(patched, "file://TESTDATA/") {
 		t.Fatalf("portable TESTDATA placeholder was not patched")

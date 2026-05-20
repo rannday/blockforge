@@ -13,8 +13,8 @@ import (
 const testConfigSHA1 = "813f2cc7a417af4cea8f5eeb7c88752cee018374"
 
 func TestRootManifestFixtureValidatesWithPortableConfigURL(t *testing.T) {
-	root := repoRootFromServerInstallerTest(t)
-	manifestPath := patchPortableManifestFixture(t, root, t.TempDir())
+	fixtureDir := fixtureDataDirFromServerInstallerTest(t)
+	manifestPath := patchPortableManifestFixture(t, fixtureDir, t.TempDir())
 
 	manifest, err := FetchRemoteManifest(pathToFileURL(manifestPath))
 	if err != nil {
@@ -61,31 +61,31 @@ func TestRootManifestFixtureValidatesWithPortableConfigURL(t *testing.T) {
 }
 
 func TestRootConfigZipFixtureSHA1(t *testing.T) {
-	root := repoRootFromServerInstallerTest(t)
-	configPath := filepath.Join(root, "testdata", "blockforge-test-config-0.1.15.zip")
+	fixtureDir := fixtureDataDirFromServerInstallerTest(t)
+	configPath := filepath.Join(fixtureDir, "blockforge-test-config-0.1.15.zip")
 
 	assertPathExists(t, configPath)
 	assertFileSHA1(t, configPath, testConfigSHA1)
 }
 
-func repoRootFromServerInstallerTest(t *testing.T) string {
+func fixtureDataDirFromServerInstallerTest(t *testing.T) string {
 	t.Helper()
 
-	root, err := filepath.Abs(filepath.Join("..", ".."))
+	dir, err := filepath.Abs(filepath.Join("..", "tests", "testsdata"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return root
+	return dir
 }
 
-func patchPortableManifestFixture(t *testing.T, root, dstDir string) string {
+func patchPortableManifestFixture(t *testing.T, fixtureDir, dstDir string) string {
 	t.Helper()
 
-	raw, err := os.ReadFile(filepath.Join(root, "testdata", "test-manifest.json"))
+	raw, err := os.ReadFile(filepath.Join(fixtureDir, "test-manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	testdataURL := fileURLFromPath(filepath.Join(root, "testdata")) + "/"
+	testdataURL := fileURLFromPath(fixtureDir) + "/"
 	patched := strings.ReplaceAll(string(raw), "file://TESTDATA/", testdataURL)
 	if strings.Contains(patched, "file://TESTDATA/") {
 		t.Fatalf("portable TESTDATA placeholder was not patched")
