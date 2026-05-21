@@ -84,12 +84,12 @@ func PlanNeoForgeLoader(targetDir string, desired LoaderManifest, force bool) (s
 	}
 
 	switch {
+	case len(installed) == 0:
+		return "install", oldVersions, nil
 	case force:
 		return "reinstall", oldVersions, nil
 	case desiredInstalled:
 		return "skip", oldVersions, nil
-	case len(installed) == 0:
-		return "install", oldVersions, nil
 	default:
 		return "update", oldVersions, nil
 	}

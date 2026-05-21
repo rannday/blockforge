@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -758,6 +759,73 @@ func TestDryRunReportsDesiredModDirectoryError(t *testing.T) {
 	_, err := PlanDryRun(root, "file:///manifest.json", manifest, false)
 	if err == nil || !strings.Contains(err.Error(), "target mod path is a directory") {
 		t.Fatalf("PlanDryRun() error = %v, want directory error", err)
+	}
+}
+
+func TestPlanNeoForgeLoaderActions(t *testing.T) {
+	t.Parallel()
+
+	desired := LoaderManifest{
+		Type:         "neoforge",
+		Version:      "21.1.228",
+		InstallerURL: "https://example.com/neoforge-21.1.228-installer.jar",
+		SHA1:         "0000000000000000000000000000000000000000",
+	}
+
+	cases := []struct {
+		name       string
+		installed  []string
+		force      bool
+		wantAction string
+		wantOld    []string
+	}{
+		{
+			name:       "force fresh install reports install",
+			force:      true,
+			wantAction: "install",
+		},
+		{
+			name:       "desired installed skips without force",
+			installed:  []string{"21.1.228"},
+			wantAction: "skip",
+		},
+		{
+			name:       "desired installed reinstalls with force",
+			installed:  []string{"21.1.228"},
+			force:      true,
+			wantAction: "reinstall",
+		},
+		{
+			name:       "old installed version updates without force",
+			installed:  []string{"21.1.227"},
+			wantAction: "update",
+			wantOld:    []string{"21.1.227"},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			for _, version := range tc.installed {
+				if err := os.MkdirAll(installedNeoForgeVersionDir(root, version), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			action, oldVersions, err := PlanNeoForgeLoader(root, desired, tc.force)
+			if err != nil {
+				t.Fatalf("PlanNeoForgeLoader() error = %v", err)
+			}
+			if action != tc.wantAction {
+				t.Fatalf("action = %q, want %q", action, tc.wantAction)
+			}
+			if !slices.Equal(oldVersions, tc.wantOld) {
+				t.Fatalf("oldVersions = %v, want %v", oldVersions, tc.wantOld)
+			}
+		})
 	}
 }
 
