@@ -11,6 +11,7 @@ import (
 
 type Options struct {
 	Force           bool
+	DryRun          bool
 	DownloadWorkers int
 	TargetDir       string
 	ManifestSource  string
@@ -56,6 +57,15 @@ func Run(args []string) error {
 	if opts.CheckManifest {
 		fmt.Print(manifestCheckSummary(manifest))
 		fmt.Println("Check complete. No files changed.")
+		return nil
+	}
+
+	if opts.DryRun {
+		plan, err := PlanDryRun(opts.TargetDir, manifestSource, manifest, opts.Force)
+		if err != nil {
+			return err
+		}
+		fmt.Print(formatDryRunPlan(plan))
 		return nil
 	}
 
@@ -130,6 +140,7 @@ func parseOptions(args []string) (Options, error) {
 	fs.BoolVar(&opts.VersionOnly, "v", false, "print installer version and exit")
 	fs.BoolVar(&opts.CheckManifest, "check-manifest", false, "validate the manifest and print a summary without changing files")
 	fs.BoolVar(&opts.CheckManifest, "c", false, "validate the manifest and print a summary without changing files")
+	fs.BoolVar(&opts.DryRun, "dry-run", false, "show planned changes without modifying files")
 	fs.StringVar(&opts.TargetDir, "dir", ".", "server install directory")
 	fs.StringVar(&opts.TargetDir, "d", ".", "server install directory")
 	fs.BoolVar(&opts.Force, "force", false, "re-download/reinstall files")
@@ -157,6 +168,9 @@ func parseOptions(args []string) (Options, error) {
 	if opts.DownloadWorkers < 1 || opts.DownloadWorkers > 16 {
 		return opts, fmt.Errorf("--workers must be between 1 and 16")
 	}
+	if opts.CheckManifest && opts.DryRun {
+		return opts, fmt.Errorf("--check-manifest and --dry-run cannot be combined")
+	}
 
 	return opts, nil
 }
@@ -170,6 +184,7 @@ func printInstallerUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)")
 	fmt.Fprintln(w, "  -d, --dir DIR              Server install directory (default: .)")
 	fmt.Fprintln(w, "  -c, --check-manifest       Validate manifest and print a summary without changing files")
+	fmt.Fprintln(w, "      --dry-run              Show planned changes without modifying files")
 	fmt.Fprintln(w, "  -f, --force                Re-download/reinstall files instead of keeping existing files")
 	fmt.Fprintln(w, "  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)")
 	fmt.Fprintln(w, "  -v, --version              Print installer version and exit")

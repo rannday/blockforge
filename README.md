@@ -51,11 +51,20 @@ Flags:
 - `-m`, `--manifest`
 - `-d`, `--dir`
 - `-c`, `--check-manifest`
+- `--dry-run`
 - `-f`, `--force`
 - `-w`, `--workers`
 - `-v`, `--version`
 
 `--check-manifest` validates the resolved manifest and prints a summary without changing files. It can use either `--manifest` or the saved local manifest source.
+
+Dry run validates the resolved manifest and prints planned changes without modifying files:
+
+```bash
+blockforge --dir /opt/minecraft/my-pack --dry-run
+```
+
+Unmanaged files and directories in `mods/` are listed as planned removals but are not removed during dry run.
 
 ## Managed Files
 

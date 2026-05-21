@@ -15,30 +15,30 @@ type Manifest struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Pack          string                `json:"pack,omitempty"`
 	Version       string                `json:"version"`
-	Minecraft     string                `json:"minecraft,omitempty"`
+	Minecraft     string                `json:"minecraft"`
 	Loader        LoaderManifest        `json:"loader"`
-	ServerConfig  *ServerConfigManifest `json:"server_config,omitempty"`
-	Mods          []ManifestMod         `json:"mods,omitempty"`
+	ServerConfig  *ServerConfigManifest `json:"server_config"`
+	Mods          []ManifestMod         `json:"mods"`
 }
 
 type LoaderManifest struct {
 	Type         string `json:"type"`
 	Version      string `json:"version"`
 	InstallerURL string `json:"installer_url"`
-	SHA1         string `json:"sha1,omitempty"`
+	SHA1         string `json:"sha1"`
 }
 
 type ServerConfigManifest struct {
-	URL  string `json:"url,omitempty"`
-	SHA1 string `json:"sha1,omitempty"`
+	URL  string `json:"url"`
+	SHA1 string `json:"sha1"`
 }
 
 type ManifestMod struct {
-	Name       string `json:"name,omitempty"`
+	Name       string `json:"name"`
 	URL        string `json:"url"`
-	WebsiteURL string `json:"website_url,omitempty"`
+	WebsiteURL string `json:"website_url"`
 	SHA1       string `json:"sha1"`
-	Size       int64  `json:"size,omitempty"`
+	Size       int64  `json:"size"`
 }
 
 func LoadManifestFromBytes(data []byte) (Manifest, error) {

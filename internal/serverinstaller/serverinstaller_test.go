@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -668,6 +670,123 @@ func TestCheckManifestRejectsUnimplementedLoader(t *testing.T) {
 	}
 }
 
+func TestDryRunDoesNotRequireTargetDirOrCreateIt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing-target")
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(validManifestJSON()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := Run([]string{"--dir", root, "--manifest", manifestPath, "--dry-run"}); err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	})
+
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("dry run created target dir: %v", err)
+	}
+	for _, text := range []string{
+		"Dry run:",
+		"mods download:   1",
+		"Dry run complete. No files changed.",
+	} {
+		if !strings.Contains(output, text) {
+			t.Fatalf("dry-run output missing %q:\n%s", text, output)
+		}
+	}
+}
+
+func TestDryRunPlansManagedModsWithoutMutation(t *testing.T) {
+	root := t.TempDir()
+	modsDirPath := filepath.Join(root, "mods")
+	if err := os.MkdirAll(modsDirPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	current := []byte("current")
+	if err := os.WriteFile(filepath.Join(modsDirPath, "current.jar"), current, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modsDirPath, "replace.jar"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modsDirPath, "extra.jar"), []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(modsDirPath, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := validTestManifest()
+	manifest.Mods = []ManifestMod{
+		{Name: "Current Mod", URL: "https://example.invalid/current.jar", WebsiteURL: "https://example.invalid/current", SHA1: sha1HexOfBytes(current), Size: int64(len(current))},
+		{Name: "Replace Mod", URL: "https://example.invalid/replace.jar", WebsiteURL: "https://example.invalid/replace", SHA1: strings.Repeat("4", 40), Size: 999},
+	}
+
+	plan, err := PlanDryRun(root, "file:///manifest.json", manifest, false)
+	if err != nil {
+		t.Fatalf("PlanDryRun() error = %v", err)
+	}
+	if len(plan.ModsToKeep) != 1 || plan.ModsToKeep[0].FileName != "current.jar" {
+		t.Fatalf("ModsToKeep = %#v, want current.jar", plan.ModsToKeep)
+	}
+	if len(plan.ModsToDownload) != 1 || plan.ModsToDownload[0].FileName != "replace.jar" {
+		t.Fatalf("ModsToDownload = %#v, want replace.jar", plan.ModsToDownload)
+	}
+	if len(plan.UnmanagedModPaths) != 2 {
+		t.Fatalf("UnmanagedModPaths = %#v, want 2 removals", plan.UnmanagedModPaths)
+	}
+	if _, err := os.Stat(filepath.Join(modsDirPath, "extra.jar")); err != nil {
+		t.Fatalf("dry run removed unmanaged file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(modsDirPath, "nested")); err != nil {
+		t.Fatalf("dry run removed unmanaged dir: %v", err)
+	}
+}
+
+func TestDryRunReportsDesiredModDirectoryError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "mods", "example.jar"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := validTestManifest()
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := PlanDryRun(root, "file:///manifest.json", manifest, false)
+	if err == nil || !strings.Contains(err.Error(), "target mod path is a directory") {
+		t.Fatalf("PlanDryRun() error = %v, want directory error", err)
+	}
+}
+
+func TestManifestJSONTagsKeepRequiredFields(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(Manifest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, field := range []string{`"version"`, `"minecraft"`, `"loader"`, `"server_config"`, `"mods"`} {
+		if !strings.Contains(got, field) {
+			t.Fatalf("Marshal(Manifest{}) = %s, missing %s", got, field)
+		}
+	}
+
+	raw, err = json.Marshal(ManifestMod{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = string(raw)
+	for _, field := range []string{`"name"`, `"url"`, `"website_url"`, `"sha1"`, `"size"`} {
+		if !strings.Contains(got, field) {
+			t.Fatalf("Marshal(ManifestMod{}) = %s, missing %s", got, field)
+		}
+	}
+}
+
 func TestParseOptionsSupportsAliases(t *testing.T) {
 	t.Parallel()
 
@@ -737,13 +856,33 @@ func TestParseOptionsSupportsCheckManifestShortFlag(t *testing.T) {
 	}
 }
 
+func TestParseOptionsSupportsDryRun(t *testing.T) {
+	t.Parallel()
+
+	opts, err := parseOptions([]string{"--dry-run"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if !opts.DryRun {
+		t.Fatalf("parseOptions() DryRun = false, want true")
+	}
+}
+
+func TestParseOptionsRejectsCheckManifestWithDryRun(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseOptions([]string{"--check-manifest", "--dry-run"}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("parseOptions() error = %v, want conflict", err)
+	}
+}
+
 func TestInstallerUsageText(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
 	printInstallerUsage(&buf)
 	got := buf.String()
-	want := "Usage: blockforge [options]\n\nInstall or update a modded Minecraft server from a manifest.\n\nOptions:\n  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)\n  -d, --dir DIR              Server install directory (default: .)\n  -c, --check-manifest       Validate manifest and print a summary without changing files\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)\n  -v, --version              Print installer version and exit\n  -h, --help                 Show this help text and exit\n\nFirst install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.\n"
+	want := "Usage: blockforge [options]\n\nInstall or update a modded Minecraft server from a manifest.\n\nOptions:\n  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)\n  -d, --dir DIR              Server install directory (default: .)\n  -c, --check-manifest       Validate manifest and print a summary without changing files\n      --dry-run              Show planned changes without modifying files\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)\n  -v, --version              Print installer version and exit\n  -h, --help                 Show this help text and exit\n\nFirst install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.\n"
 	if got != want {
 		t.Fatalf("usage text mismatch:\n--- got ---\n%s--- want ---\n%s", got, want)
 	}
@@ -1292,6 +1431,67 @@ func TestReplaceFileCreatesMissingTarget(t *testing.T) {
 	}
 }
 
+func TestReplaceFileRestoresTargetWhenFinalRenameFails(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "artifact.jar")
+	temp := filepath.Join(root, "artifact.jar.tmp")
+
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(temp, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRename := renameFile
+	renameFile = func(oldpath, newpath string) error {
+		if oldpath == temp && newpath == target {
+			return os.ErrPermission
+		}
+		return oldRename(oldpath, newpath)
+	}
+	defer func() { renameFile = oldRename }()
+
+	if err := replaceFile(temp, target); !os.IsPermission(err) {
+		t.Fatalf("replaceFile() error = %v, want permission error", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old" {
+		t.Fatalf("target not restored: %q", data)
+	}
+}
+
+func TestReplaceFileDoesNotClobberStaleFixedBackup(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "artifact.jar")
+	temp := filepath.Join(root, "artifact.jar.tmp")
+	staleBackup := target + ".bak"
+
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(temp, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleBackup, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceFile(temp, target); err != nil {
+		t.Fatalf("replaceFile() error = %v", err)
+	}
+	data, err := os.ReadFile(staleBackup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "stale" {
+		t.Fatalf("stale backup was clobbered: %q", data)
+	}
+}
+
 func TestReplaceFilePropagatesStatErrors(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "artifact.jar")
@@ -1453,6 +1653,33 @@ func withServerConfigZipLimits(t *testing.T, limits zipExtractLimits) {
 	t.Cleanup(func() {
 		serverConfigZipLimits = old
 	})
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+
+	out := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, reader)
+		out <- buf.String()
+	}()
+
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+	fn()
+	_ = writer.Close()
+	output := <-out
+	_ = reader.Close()
+	return output
 }
 
 func fileURL(path string) string {

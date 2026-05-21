@@ -127,10 +127,8 @@ download:
 }
 
 func replaceFile(tempPath, targetPath string) error {
-	backupPath := targetPath + ".bak"
-
 	if _, err := statFile(targetPath); err == nil {
-		_ = removeFile(backupPath)
+		backupPath := fmt.Sprintf("%s.bak-%d-%d", targetPath, os.Getpid(), time.Now().UnixNano())
 
 		if err := renameFile(targetPath, backupPath); err != nil {
 			return err
