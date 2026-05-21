@@ -7,17 +7,23 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 type Options struct {
 	Force           bool
 	DryRun          bool
+	Vanilla         bool
 	DownloadWorkers int
 	TargetDir       string
 	ManifestSource  string
 	CheckManifest   bool
 	VersionOnly     bool
 	Help            bool
+
+	manifestSet      bool
+	checkManifestSet bool
+	workersSet       bool
 }
 
 func Run(args []string) error {
@@ -36,6 +42,10 @@ func Run(args []string) error {
 
 	if opts.TargetDir == "" {
 		opts.TargetDir = "."
+	}
+
+	if opts.Vanilla {
+		return RunVanilla(opts)
 	}
 
 	manifestSource, err := resolveManifestSource(opts.TargetDir, opts.ManifestSource)
@@ -140,6 +150,7 @@ func parseOptions(args []string) (Options, error) {
 	fs.BoolVar(&opts.VersionOnly, "v", false, "print installer version and exit")
 	fs.BoolVar(&opts.CheckManifest, "check-manifest", false, "validate the manifest and print a summary without changing files")
 	fs.BoolVar(&opts.CheckManifest, "c", false, "validate the manifest and print a summary without changing files")
+	fs.BoolVar(&opts.Vanilla, "vanilla", false, "install or update latest vanilla Minecraft server")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "show planned changes without modifying files")
 	fs.StringVar(&opts.TargetDir, "dir", ".", "server install directory")
 	fs.StringVar(&opts.TargetDir, "d", ".", "server install directory")
@@ -165,6 +176,21 @@ func parseOptions(args []string) (Options, error) {
 		return opts, flag.ErrHelp
 	}
 
+	opts.manifestSet = flagWasSupplied(args, "manifest", "m", "manifest-url")
+	opts.checkManifestSet = flagWasSupplied(args, "check-manifest", "c")
+	opts.workersSet = flagWasSupplied(args, "workers", "w", "download-workers")
+
+	if opts.Vanilla {
+		if opts.manifestSet {
+			return opts, fmt.Errorf("--vanilla cannot be combined with --manifest")
+		}
+		if opts.checkManifestSet {
+			return opts, fmt.Errorf("--vanilla cannot be combined with --check-manifest")
+		}
+		if opts.workersSet {
+			return opts, fmt.Errorf("--vanilla cannot be combined with --workers")
+		}
+	}
 	if opts.DownloadWorkers < 1 || opts.DownloadWorkers > 16 {
 		return opts, fmt.Errorf("--workers must be between 1 and 16")
 	}
@@ -175,15 +201,33 @@ func parseOptions(args []string) (Options, error) {
 	return opts, nil
 }
 
+func flagWasSupplied(args []string, names ...string) bool {
+	want := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		want["-"+name] = struct{}{}
+		want["--"+name] = struct{}{}
+	}
+	for _, arg := range args {
+		if i := strings.IndexByte(arg, '='); i >= 0 {
+			arg = arg[:i]
+		}
+		if _, ok := want[arg]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func printInstallerUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: blockforge [options]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Install or update a modded Minecraft server from a manifest.")
+	fmt.Fprintln(w, "Install or update a Minecraft server.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Options:")
 	fmt.Fprintln(w, "  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)")
 	fmt.Fprintln(w, "  -d, --dir DIR              Server install directory (default: .)")
 	fmt.Fprintln(w, "  -c, --check-manifest       Validate manifest and print a summary without changing files")
+	fmt.Fprintln(w, "      --vanilla              Install/update latest recommended vanilla release")
 	fmt.Fprintln(w, "      --dry-run              Show planned changes without modifying files")
 	fmt.Fprintln(w, "  -f, --force                Re-download/reinstall files instead of keeping existing files")
 	fmt.Fprintln(w, "  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)")

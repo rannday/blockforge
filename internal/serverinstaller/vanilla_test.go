@@ -1,0 +1,349 @@
+package serverinstaller
+
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParseOptionsSupportsVanilla(t *testing.T) {
+	opts, err := parseOptions([]string{"--vanilla", "-d", "srv"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if !opts.Vanilla {
+		t.Fatalf("parseOptions() Vanilla = false, want true")
+	}
+	if opts.TargetDir != "srv" {
+		t.Fatalf("parseOptions() TargetDir = %q, want srv", opts.TargetDir)
+	}
+}
+
+func TestParseOptionsRejectsVanillaConflicts(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"manifest long", []string{"--vanilla", "--manifest", "https://example.invalid/manifest.json"}, "--manifest"},
+		{"manifest short", []string{"--vanilla", "-m", "https://example.invalid/manifest.json"}, "--manifest"},
+		{"manifest url", []string{"--vanilla", "--manifest-url", "https://example.invalid/manifest.json"}, "--manifest"},
+		{"check manifest long", []string{"--vanilla", "--check-manifest"}, "--check-manifest"},
+		{"check manifest short", []string{"--vanilla", "-c"}, "--check-manifest"},
+		{"workers", []string{"--vanilla", "--workers", "2"}, "--workers"},
+		{"workers short", []string{"--vanilla", "-w", "2"}, "--workers"},
+		{"download workers", []string{"--vanilla", "--download-workers", "2"}, "--workers"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseOptions(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parseOptions() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchLatestVanillaServerUsesLatestRelease(t *testing.T) {
+	restore := stubVanillaFetch(t, map[string]string{
+		vanillaVersionManifestURL: `{
+			"latest": {"release": "1.21.8", "snapshot": "25w01a"},
+			"versions": [
+				{"id": "25w01a", "url": "https://example.invalid/snapshot.json"},
+				{"id": "1.21.8", "url": "https://example.invalid/release.json"}
+			]
+		}`,
+		"https://example.invalid/release.json": vanillaVersionJSON("https://example.invalid/server.jar", strings.Repeat("a", 40), 6),
+	})
+	defer restore()
+
+	server, err := FetchLatestVanillaServer()
+	if err != nil {
+		t.Fatalf("FetchLatestVanillaServer() error = %v", err)
+	}
+	if server.MinecraftVersion != "1.21.8" {
+		t.Fatalf("MinecraftVersion = %q, want latest.release", server.MinecraftVersion)
+	}
+	if server.ServerURL != "https://example.invalid/server.jar" {
+		t.Fatalf("ServerURL = %q, want release server URL", server.ServerURL)
+	}
+}
+
+func TestFetchLatestVanillaServerErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{"missing server", `{ "downloads": {} }`, "missing downloads.server"},
+		{"missing url", fmt.Sprintf(`{ "downloads": { "server": { "sha1": %q, "size": 1 } } }`, strings.Repeat("a", 40)), "missing downloads.server.url"},
+		{"missing sha1", `{ "downloads": { "server": { "url": "https://example.invalid/server.jar", "size": 1 } } }`, "missing downloads.server.sha1"},
+		{"missing size", fmt.Sprintf(`{ "downloads": { "server": { "url": "https://example.invalid/server.jar", "sha1": %q } } }`, strings.Repeat("a", 40)), "missing downloads.server.size"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubVanillaFetch(t, map[string]string{
+				vanillaVersionManifestURL: `{
+					"latest": {"release": "1.21.8"},
+					"versions": [{"id": "1.21.8", "url": "https://example.invalid/release.json"}]
+				}`,
+				"https://example.invalid/release.json": tc.version,
+			})
+			defer restore()
+
+			_, err := FetchLatestVanillaServer()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("FetchLatestVanillaServer() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchLatestVanillaServerMetadataErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		want     string
+	}{
+		{"invalid json", `{`, "parse vanilla version manifest"},
+		{"missing latest release", `{ "latest": {}, "versions": [] }`, "missing latest.release"},
+		{"latest release absent", `{ "latest": {"release": "1.21.8"}, "versions": [] }`, "not found"},
+		{"missing version url", `{ "latest": {"release": "1.21.8"}, "versions": [{"id": "1.21.8"}] }`, "missing version URL"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubVanillaFetch(t, map[string]string{vanillaVersionManifestURL: tc.manifest})
+			defer restore()
+
+			_, err := FetchLatestVanillaServer()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("FetchLatestVanillaServer() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunVanillaKeepsMatchingServerJar(t *testing.T) {
+	root, server := vanillaFixture(t, "server")
+	if err := os.WriteFile(filepath.Join(root, "server.jar"), []byte("server"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := stubRunVanilla(t, server)
+	defer restore()
+
+	if err := RunVanilla(Options{TargetDir: root}); err != nil {
+		t.Fatalf("RunVanilla() error = %v", err)
+	}
+	if got := readTestFile(t, filepath.Join(root, "server.jar")); got != "server" {
+		t.Fatalf("server.jar = %q, want kept content", got)
+	}
+}
+
+func TestRunVanillaReplacesMismatchedServerJar(t *testing.T) {
+	root, server := vanillaFixture(t, "new server")
+	if err := os.WriteFile(filepath.Join(root, "server.jar"), []byte("old server"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := stubRunVanilla(t, server)
+	defer restore()
+
+	if err := RunVanilla(Options{TargetDir: root}); err != nil {
+		t.Fatalf("RunVanilla() error = %v", err)
+	}
+	if got := readTestFile(t, filepath.Join(root, "server.jar")); got != "new server" {
+		t.Fatalf("server.jar = %q, want replaced content", got)
+	}
+}
+
+func TestRunVanillaForceRedownloadsMatchingServerJar(t *testing.T) {
+	root, server := vanillaFixture(t, "server")
+	if err := os.WriteFile(filepath.Join(root, "server.jar"), []byte("server"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := stubRunVanilla(t, server)
+	defer restore()
+
+	if err := RunVanilla(Options{TargetDir: root, Force: true}); err != nil {
+		t.Fatalf("RunVanilla() error = %v", err)
+	}
+	if got := readTestFile(t, filepath.Join(root, "server.jar")); got != "server" {
+		t.Fatalf("server.jar = %q, want server", got)
+	}
+}
+
+func TestRunVanillaWritesLaunchersJVMArgsAndState(t *testing.T) {
+	root, server := vanillaFixture(t, "server")
+	restore := stubRunVanilla(t, server)
+	defer restore()
+
+	if err := RunVanilla(Options{TargetDir: root}); err != nil {
+		t.Fatalf("RunVanilla() error = %v", err)
+	}
+
+	if got := readTestFile(t, filepath.Join(root, "run.sh")); got != vanillaRunSh {
+		t.Fatalf("run.sh = %q, want vanilla launcher", got)
+	}
+	if got := readTestFile(t, filepath.Join(root, "run.bat")); got != vanillaRunBat {
+		t.Fatalf("run.bat = %q, want vanilla launcher", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "user_jvm_args.txt")); err != nil {
+		t.Fatalf("user_jvm_args.txt missing: %v", err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, stateFile(root, "install-type"))); got != "vanilla" {
+		t.Fatalf("install-type = %q, want vanilla", got)
+	}
+	if got := strings.TrimSpace(readTestFile(t, stateFile(root, "minecraft-version"))); got != server.MinecraftVersion {
+		t.Fatalf("minecraft-version = %q, want %q", got, server.MinecraftVersion)
+	}
+	if got := strings.TrimSpace(readTestFile(t, stateFile(root, "server-jar-sha1"))); got != server.ServerSHA1 {
+		t.Fatalf("server-jar-sha1 = %q, want %q", got, server.ServerSHA1)
+	}
+	if got := strings.TrimSpace(readTestFile(t, stateFile(root, "installer-version.txt"))); got != Version {
+		t.Fatalf("installer-version.txt = %q, want %q", got, Version)
+	}
+}
+
+func TestRunVanillaDryRunWritesNoFiles(t *testing.T) {
+	root, server := vanillaFixture(t, "server")
+	restore := stubRunVanilla(t, server)
+	defer restore()
+
+	if err := RunVanilla(Options{TargetDir: root, DryRun: true}); err != nil {
+		t.Fatalf("RunVanilla() error = %v", err)
+	}
+	if entries, err := os.ReadDir(root); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("dry-run wrote files: %v", entries)
+	}
+}
+
+func TestRunVanillaRejectsManifestManagedDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(stateDir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(savedManifestURLPath(root), []byte("https://example.invalid/manifest.json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RunVanilla(Options{TargetDir: root, DryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "manifest-managed") {
+		t.Fatalf("RunVanilla() error = %v, want manifest-managed rejection", err)
+	}
+}
+
+func TestRunVanillaRejectsNonVanillaInstallType(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(stateDir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vanillaInstallTypePath(root), []byte("manifest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RunVanilla(Options{TargetDir: root, DryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "install-type") {
+		t.Fatalf("RunVanilla() error = %v, want install-type rejection", err)
+	}
+}
+
+func TestRunVanillaAllowsExistingVanillaInstallType(t *testing.T) {
+	root, server := vanillaFixture(t, "server")
+	if err := os.MkdirAll(stateDir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vanillaInstallTypePath(root), []byte("vanilla\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := stubRunVanilla(t, server)
+	defer restore()
+
+	if err := RunVanilla(Options{TargetDir: root, DryRun: true}); err != nil {
+		t.Fatalf("RunVanilla() error = %v", err)
+	}
+}
+
+func stubVanillaFetch(t *testing.T, responses map[string]string) func() {
+	t.Helper()
+	old := fetchVanillaBytes
+	fetchVanillaBytes = func(rawURL string) ([]byte, error) {
+		response, ok := responses[rawURL]
+		if !ok {
+			return nil, fmt.Errorf("unexpected URL %s", rawURL)
+		}
+		return []byte(response), nil
+	}
+	return func() { fetchVanillaBytes = old }
+}
+
+func stubRunVanilla(t *testing.T, server VanillaServer) func() {
+	t.Helper()
+	oldFetch := fetchVanillaBytes
+	oldRequire := requireJava21
+	fetchVanillaBytes = func(rawURL string) ([]byte, error) {
+		switch rawURL {
+		case vanillaVersionManifestURL:
+			return []byte(fmt.Sprintf(`{
+				"latest": {"release": %q},
+				"versions": [{"id": %q, "url": "https://example.invalid/release.json"}]
+			}`, server.MinecraftVersion, server.MinecraftVersion)), nil
+		case "https://example.invalid/release.json":
+			return []byte(vanillaVersionJSON(server.ServerURL, server.ServerSHA1, server.ServerSize)), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", rawURL)
+		}
+	}
+	requireJava21 = func() error { return nil }
+	return func() {
+		fetchVanillaBytes = oldFetch
+		requireJava21 = oldRequire
+	}
+}
+
+func vanillaFixture(t *testing.T, serverContent string) (string, VanillaServer) {
+	t.Helper()
+	root := t.TempDir()
+	artifact := filepath.Join(t.TempDir(), "server.jar")
+	if err := os.WriteFile(artifact, []byte(serverContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha1.Sum([]byte(serverContent))
+	return root, VanillaServer{
+		MinecraftVersion: "1.21.8",
+		ServerURL:        pathToFileURL(artifact),
+		ServerSHA1:       hex.EncodeToString(sum[:]),
+		ServerSize:       int64(len(serverContent)),
+	}
+}
+
+func vanillaVersionJSON(serverURL, sha1 string, size int64) string {
+	return fmt.Sprintf(`{
+		"downloads": {
+			"server": {
+				"url": %q,
+				"sha1": %q,
+				"size": %d
+			}
+		}
+	}`, serverURL, sha1, size)
+}
+
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
