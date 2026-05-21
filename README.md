@@ -49,10 +49,11 @@ Passing `--manifest` again uses that source and saves its normalized form for la
 Flags:
 
 - `-m`, `--manifest`
+- `-d`, `--dir`
 - `-c`, `--check-manifest`
-- `--force`
+- `-f`, `--force`
 - `-w`, `--workers`
-- `--version`
+- `-v`, `--version`
 
 `--check-manifest` validates the resolved manifest and prints a summary without changing files. It can use either `--manifest` or the saved local manifest source.
 
@@ -123,7 +124,7 @@ gh release upload v0.1.4 tmp/release/0.1.4/* --repo rannday/blockforge --clobber
 
 Build tool:
 
-- comes from `github.com/rannday/go-build-bin/cmd/go-build-bin`,
+- comes from `github.com/rannday/go-build-bin`,
 - builds platform binaries with size-reducing Go flags,
 - packages release archives under `tmp/release/<version>`,
 - writes `checksums.txt`.

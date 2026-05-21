@@ -34,7 +34,7 @@ Go:
 
 Release:
 
-- use `github.com/rannday/go-build-bin/cmd/go-build-bin` for build, archive, checksums
+- use `github.com/rannday/go-build-bin` for build, archive, checksums
 - keep build and upload separate
 - build tool owns cross-platform compile flags
 - build tool owns archive packaging

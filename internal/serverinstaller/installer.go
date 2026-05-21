@@ -49,15 +49,14 @@ func Run(args []string) error {
 	if err := manifest.Validate(); err != nil {
 		return err
 	}
+	if err := validateLoaderImplemented(manifest.Loader); err != nil {
+		return err
+	}
 
 	if opts.CheckManifest {
 		fmt.Print(manifestCheckSummary(manifest))
 		fmt.Println("Check complete. No files changed.")
 		return nil
-	}
-
-	if err := validateLoaderImplemented(manifest.Loader); err != nil {
-		return err
 	}
 
 	if err := RequireJava21(); err != nil {

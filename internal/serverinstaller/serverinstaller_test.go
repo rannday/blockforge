@@ -650,6 +650,24 @@ func TestCheckAcceptsSimplifiedManifest(t *testing.T) {
 	}
 }
 
+func TestCheckManifestRejectsUnimplementedLoader(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing-target")
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	raw := strings.Replace(validManifestJSON(), `"type": "neoforge"`, `"type": "forge"`, 1)
+	if err := os.WriteFile(manifestPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Run([]string{"--dir", root, "--manifest", manifestPath, "--check-manifest"})
+	if err == nil || !strings.Contains(err.Error(), "recognized by the manifest schema but is not implemented") {
+		t.Fatalf("Run() error = %v, want not implemented", err)
+	}
+
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("check mode created target dir: %v", err)
+	}
+}
+
 func TestParseOptionsSupportsAliases(t *testing.T) {
 	t.Parallel()
 
