@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var requireJava21 = RequireJava21
+var requireJava = RequireJava
 var downloadVanillaFile = downloadToFile
 
 func RunVanilla(opts Options) error {
@@ -20,7 +20,7 @@ func RunVanilla(opts Options) error {
 	}
 
 	if opts.DryRun {
-		plan, err := PlanVanillaDryRun(opts.TargetDir, server, opts.Force)
+		plan, err := PlanVanillaDryRun(opts.TargetDir, server, opts.JavaPath, opts.Force)
 		if err != nil {
 			return err
 		}
@@ -28,7 +28,7 @@ func RunVanilla(opts Options) error {
 		return nil
 	}
 
-	if err := requireJava21(); err != nil {
+	if err := requireJava(opts.JavaPath, server.JavaMajorVersion); err != nil {
 		return err
 	}
 
@@ -47,7 +47,7 @@ func RunVanilla(opts Options) error {
 		return err
 	}
 
-	if err := WriteVanillaLaunchers(opts.TargetDir); err != nil {
+	if err := WriteVanillaLaunchers(opts.TargetDir, opts.JavaPath); err != nil {
 		return err
 	}
 	if err := WriteJvmArgs(opts.TargetDir, opts.Force); err != nil {
@@ -88,6 +88,7 @@ func WriteVanillaState(targetDir string, server VanillaServer) error {
 	files := map[string]string{
 		"install-type":          "vanilla\n",
 		"minecraft-version":     server.MinecraftVersion + "\n",
+		"java-major-version":    fmt.Sprintf("%d\n", server.JavaMajorVersion),
 		"server-jar-sha1":       server.ServerSHA1 + "\n",
 		"installer-version.txt": Version + "\n",
 	}

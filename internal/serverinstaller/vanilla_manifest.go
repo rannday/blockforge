@@ -11,6 +11,7 @@ var fetchVanillaBytes = downloadURLToBytes
 
 type VanillaServer struct {
 	MinecraftVersion string
+	JavaMajorVersion int
 	ServerURL        string
 	ServerSHA1       string
 	ServerSize       int64
@@ -27,6 +28,9 @@ type mojangVersionManifest struct {
 }
 
 type mojangVersionJSON struct {
+	JavaVersion struct {
+		MajorVersion int `json:"majorVersion"`
+	} `json:"javaVersion"`
 	Downloads map[string]struct {
 		URL  string `json:"url"`
 		SHA1 string `json:"sha1"`
@@ -73,6 +77,9 @@ func FetchLatestVanillaServer() (VanillaServer, error) {
 	if err := json.Unmarshal(raw, &version); err != nil {
 		return VanillaServer{}, fmt.Errorf("parse vanilla version %s: %w", manifest.Latest.Release, err)
 	}
+	if version.JavaVersion.MajorVersion <= 0 {
+		return VanillaServer{}, fmt.Errorf("vanilla version %s missing javaVersion.majorVersion", manifest.Latest.Release)
+	}
 	server, ok := version.Downloads["server"]
 	if !ok {
 		return VanillaServer{}, fmt.Errorf("vanilla version %s missing downloads.server", manifest.Latest.Release)
@@ -92,6 +99,7 @@ func FetchLatestVanillaServer() (VanillaServer, error) {
 
 	return VanillaServer{
 		MinecraftVersion: manifest.Latest.Release,
+		JavaMajorVersion: version.JavaVersion.MajorVersion,
 		ServerURL:        server.URL,
 		ServerSHA1:       server.SHA1,
 		ServerSize:       server.Size,

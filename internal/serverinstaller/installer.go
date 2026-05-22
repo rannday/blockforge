@@ -17,6 +17,7 @@ type Options struct {
 	DownloadWorkers int
 	TargetDir       string
 	ManifestSource  string
+	JavaPath        string
 	CheckManifest   bool
 	VersionOnly     bool
 	Help            bool
@@ -24,6 +25,7 @@ type Options struct {
 	manifestSet      bool
 	checkManifestSet bool
 	workersSet       bool
+	javaSet          bool
 }
 
 func Run(args []string) error {
@@ -159,6 +161,8 @@ func parseOptions(args []string) (Options, error) {
 	fs.StringVar(&opts.ManifestSource, "manifest", "", "manifest source URL or local path")
 	fs.StringVar(&opts.ManifestSource, "m", "", "manifest source URL or local path")
 	fs.StringVar(&opts.ManifestSource, "manifest-url", "", "deprecated manifest URL alias")
+	fs.StringVar(&opts.JavaPath, "java", "java", "java executable path")
+	fs.StringVar(&opts.JavaPath, "j", "java", "java executable path")
 	fs.IntVar(&opts.DownloadWorkers, "workers", 6, "mod download worker count")
 	fs.IntVar(&opts.DownloadWorkers, "w", 6, "mod download worker count")
 	fs.IntVar(&opts.DownloadWorkers, "download-workers", 6, "mod download worker count")
@@ -179,6 +183,7 @@ func parseOptions(args []string) (Options, error) {
 	opts.manifestSet = flagWasSupplied(args, "manifest", "m", "manifest-url")
 	opts.checkManifestSet = flagWasSupplied(args, "check-manifest", "c")
 	opts.workersSet = flagWasSupplied(args, "workers", "w", "download-workers")
+	opts.javaSet = flagWasSupplied(args, "java", "j")
 
 	if opts.Vanilla {
 		if opts.manifestSet {
@@ -190,6 +195,8 @@ func parseOptions(args []string) (Options, error) {
 		if opts.workersSet {
 			return opts, fmt.Errorf("--vanilla cannot be combined with --workers")
 		}
+	} else if opts.javaSet {
+		return opts, fmt.Errorf("--java currently only applies to --vanilla")
 	}
 	if opts.DownloadWorkers < 1 || opts.DownloadWorkers > 16 {
 		return opts, fmt.Errorf("--workers must be between 1 and 16")
@@ -231,6 +238,7 @@ func printInstallerUsage(w io.Writer) {
 	fmt.Fprintln(w, "      --dry-run              Show planned changes without modifying files")
 	fmt.Fprintln(w, "  -f, --force                Re-download/reinstall files instead of keeping existing files")
 	fmt.Fprintln(w, "  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)")
+	fmt.Fprintln(w, "  -j, --java PATH            Java executable path for vanilla installs (default: java)")
 	fmt.Fprintln(w, "  -v, --version              Print installer version and exit")
 	fmt.Fprintln(w, "  -h, --help                 Show this help text and exit")
 	fmt.Fprintln(w)

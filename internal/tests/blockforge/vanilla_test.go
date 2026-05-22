@@ -3,6 +3,7 @@
 package blockforge_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,10 +18,11 @@ func TestInstallAndUpdateVanillaServer(t *testing.T) {
 		t.Fatalf("FetchLatestVanillaServer() error = %v", err)
 	}
 
-	installDir := filepath.Join(t.TempDir(), "vanilla")
+	installDir := integrationTempDir(t, "vanilla", "server")
 	if err := serverinstaller.Run([]string{"--vanilla", "--dir", installDir}); err != nil {
-		if strings.Contains(err.Error(), "Java 21+") || strings.Contains(err.Error(), "java was not found") {
-			t.Skipf("Java 21+ unavailable: %v", err)
+		requiredJava := fmt.Sprintf("Java %d+", server.JavaMajorVersion)
+		if strings.Contains(err.Error(), requiredJava) || strings.Contains(err.Error(), "java was not found") {
+			t.Skipf("%s unavailable: %v", requiredJava, err)
 		}
 		t.Fatalf("first Run() error = %v", err)
 	}
@@ -33,6 +35,7 @@ func TestInstallAndUpdateVanillaServer(t *testing.T) {
 		filepath.Join(installDir, ".blockforge", "install-type"),
 		filepath.Join(installDir, ".blockforge", "minecraft-version"),
 		filepath.Join(installDir, ".blockforge", "server-jar-sha1"),
+		filepath.Join(installDir, ".blockforge", "java-major-version"),
 	} {
 		assertPathExists(t, path)
 	}
@@ -46,6 +49,9 @@ func TestInstallAndUpdateVanillaServer(t *testing.T) {
 	}
 	if got := strings.TrimSpace(readFile(t, filepath.Join(installDir, ".blockforge", "server-jar-sha1"))); got != server.ServerSHA1 {
 		t.Fatalf("server-jar-sha1 = %q, want %q", got, server.ServerSHA1)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(installDir, ".blockforge", "java-major-version"))); got != fmt.Sprint(server.JavaMajorVersion) {
+		t.Fatalf("java-major-version = %q, want %d", got, server.JavaMajorVersion)
 	}
 
 	before, err := os.Stat(filepath.Join(installDir, "server.jar"))

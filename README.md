@@ -15,7 +15,7 @@ https://rannday.github.io/blockforge-manifest/manifest.schema.json
 
 ## Requirements
 
-- Java 21+
+- Java version required by the target server metadata. Vanilla reads Mojang/Piston `javaVersion.majorVersion`; current NeoForge manifest installs still require Java 21+.
 - Network access
 - Linux, macOS, or Windows binary for target platform
 - GitHub CLI (`gh`) for release uploads
@@ -56,6 +56,7 @@ Vanilla mode uses Mojang/Piston metadata and always targets `latest.release`. Th
 ```bash
 blockforge --vanilla --dir /opt/minecraft/vanilla
 blockforge --vanilla -d /opt/minecraft/vanilla
+blockforge --vanilla --dir /opt/minecraft/vanilla --java /path/to/java
 blockforge --vanilla --dir /opt/minecraft/vanilla --dry-run
 blockforge --vanilla --dir /opt/minecraft/vanilla --force
 ```
@@ -69,6 +70,7 @@ Flags:
 - `-c`, `--check-manifest`
 - `--vanilla`
 - `--dry-run`
+- `-j`, `--java` (vanilla only for now)
 - `-f`, `--force`
 - `-w`, `--workers`
 - `-v`, `--version`
@@ -102,89 +104,10 @@ Vanilla mode manages:
 - `.blockforge/install-type`
 - `.blockforge/minecraft-version`
 - `.blockforge/server-jar-sha1`
+- `.blockforge/java-major-version`
 - `.blockforge/installer-version.txt`
 
 Vanilla mode rejects directories with `.blockforge/manifest-url` so modded and vanilla installs are not mixed.
-
-## OpenRC Example
-
-```sh
-#!/sbin/openrc-run
-
-name="Minecraft Server"
-description="Modded Minecraft server"
-
-command="/opt/minecraft/my-pack/run.sh"
-command_user="minecraft:minecraft"
-directory="/opt/minecraft/my-pack"
-pidfile="/run/my-pack-minecraft.pid"
-command_background="yes"
-
-depend() {
-  need net
-  after firewall
-}
-
-start_pre() {
-  ebegin "Updating Minecraft server"
-  /usr/local/bin/blockforge --dir /opt/minecraft/my-pack
-  eend $?
-}
-```
-
-## Release Flow
-
-```bash
-go generate ./...
-go test ./...
-go tool go-build-bin -v 0.1.4 --name blockforge --main ./cmd/blockforge --version-var github.com/rannday/blockforge/internal/serverinstaller.Version --clean
-gh release create v0.1.4 tmp/release/0.1.4/* --repo rannday/blockforge --title "v0.1.4" --notes "Blockforge 0.1.4"
-```
-
-After `go generate ./...`, use:
-
-```bash
-git diff --exit-code
-```
-
-Schema updates from `blockforge-manifest` flow into this repo via `go generate ./...`.
-
-Integration test:
-
-```bash
-go test -tags integration ./internal/tests/blockforge -v
-```
-
-Requires Java 21+, network access, and enough time to download NeoForge plus the test mod.
-
-If release already exists, upload/replace assets with:
-
-```bash
-gh release upload v0.1.4 tmp/release/0.1.4/* --repo rannday/blockforge --clobber
-```
-
-Build tool:
-
-- comes from `github.com/rannday/go-build-bin`,
-- builds platform binaries with size-reducing Go flags,
-- packages release archives under `tmp/release/<version>`,
-- writes `checksums.txt`.
-
-Uploader:
-
-- is GitHub CLI (`gh`),
-- uploads release archives and `checksums.txt`.
-
-Final artifact names:
-
-```text
-blockforge-0.1.4-windows-amd64.zip
-blockforge-0.1.4-linux-amd64.tar.gz
-blockforge-0.1.4-linux-arm64.tar.gz
-blockforge-0.1.4-darwin-amd64.tar.gz
-blockforge-0.1.4-darwin-arm64.tar.gz
-checksums.txt
-```
 
 ## blockforge-manifest
 

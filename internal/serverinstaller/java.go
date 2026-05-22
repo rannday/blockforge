@@ -11,21 +11,28 @@ import (
 var javaVersionPattern = regexp.MustCompile(`version "([^"]+)"`)
 
 func RequireJava21() error {
-	if _, err := exec.LookPath("java"); err != nil {
-		return fmt.Errorf("java was not found; Java 21+ is required")
+	return RequireJava("java", 21)
+}
+
+func RequireJava(javaPath string, majorVersion int) error {
+	if javaPath == "" {
+		javaPath = "java"
+	}
+	if _, err := exec.LookPath(javaPath); err != nil {
+		return fmt.Errorf("%s was not found; Java %d+ is required", javaPath, majorVersion)
 	}
 
-	out, err := exec.Command("java", "-version").CombinedOutput()
+	out, err := exec.Command(javaPath, "-version").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("java -version failed: %w\n%s", err, bytes.TrimSpace(out))
+		return fmt.Errorf("%s -version failed: %w\n%s", javaPath, err, bytes.TrimSpace(out))
 	}
 
 	version, err := ParseJavaVersion(string(out))
 	if err != nil {
 		return err
 	}
-	if version < 21 {
-		return fmt.Errorf("Java 21+ is required; found Java %d", version)
+	if version < majorVersion {
+		return fmt.Errorf("Java %d+ is required; found Java %d", majorVersion, version)
 	}
 
 	return nil

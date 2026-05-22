@@ -11,7 +11,7 @@ import (
 )
 
 func TestParseOptionsSupportsVanilla(t *testing.T) {
-	opts, err := parseOptions([]string{"--vanilla", "-d", "srv"})
+	opts, err := parseOptions([]string{"--vanilla", "-d", "srv", "-j", "custom-java"})
 	if err != nil {
 		t.Fatalf("parseOptions() error = %v", err)
 	}
@@ -20,6 +20,19 @@ func TestParseOptionsSupportsVanilla(t *testing.T) {
 	}
 	if opts.TargetDir != "srv" {
 		t.Fatalf("parseOptions() TargetDir = %q, want srv", opts.TargetDir)
+	}
+	if opts.JavaPath != "custom-java" {
+		t.Fatalf("parseOptions() JavaPath = %q, want custom-java", opts.JavaPath)
+	}
+}
+
+func TestParseOptionsSupportsJavaPathLong(t *testing.T) {
+	opts, err := parseOptions([]string{"--vanilla", "--java", "C:\\Java\\bin\\java.exe"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.JavaPath != "C:\\Java\\bin\\java.exe" {
+		t.Fatalf("parseOptions() JavaPath = %q, want custom path", opts.JavaPath)
 	}
 }
 
@@ -49,6 +62,13 @@ func TestParseOptionsRejectsVanillaConflicts(t *testing.T) {
 	}
 }
 
+func TestParseOptionsRejectsJavaPathWithoutVanilla(t *testing.T) {
+	_, err := parseOptions([]string{"--java", "custom-java", "--manifest", "https://example.invalid/manifest.json"})
+	if err == nil || !strings.Contains(err.Error(), "--java") {
+		t.Fatalf("parseOptions() error = %v, want --java rejection", err)
+	}
+}
+
 func TestFetchLatestVanillaServerUsesLatestRelease(t *testing.T) {
 	restore := stubVanillaFetch(t, map[string]string{
 		vanillaVersionManifestURL: `{
@@ -72,6 +92,9 @@ func TestFetchLatestVanillaServerUsesLatestRelease(t *testing.T) {
 	if server.ServerURL != "https://example.invalid/server.jar" {
 		t.Fatalf("ServerURL = %q, want release server URL", server.ServerURL)
 	}
+	if server.JavaMajorVersion != 25 {
+		t.Fatalf("JavaMajorVersion = %d, want 25", server.JavaMajorVersion)
+	}
 }
 
 func TestFetchLatestVanillaServerErrors(t *testing.T) {
@@ -80,10 +103,11 @@ func TestFetchLatestVanillaServerErrors(t *testing.T) {
 		version string
 		want    string
 	}{
-		{"missing server", `{ "downloads": {} }`, "missing downloads.server"},
-		{"missing url", fmt.Sprintf(`{ "downloads": { "server": { "sha1": %q, "size": 1 } } }`, strings.Repeat("a", 40)), "missing downloads.server.url"},
-		{"missing sha1", `{ "downloads": { "server": { "url": "https://example.invalid/server.jar", "size": 1 } } }`, "missing downloads.server.sha1"},
-		{"missing size", fmt.Sprintf(`{ "downloads": { "server": { "url": "https://example.invalid/server.jar", "sha1": %q } } }`, strings.Repeat("a", 40)), "missing downloads.server.size"},
+		{"missing java", fmt.Sprintf(`{ "downloads": { "server": { "url": "https://example.invalid/server.jar", "sha1": %q, "size": 1 } } }`, strings.Repeat("a", 40)), "missing javaVersion.majorVersion"},
+		{"missing server", `{ "javaVersion": { "majorVersion": 21 }, "downloads": {} }`, "missing downloads.server"},
+		{"missing url", fmt.Sprintf(`{ "javaVersion": { "majorVersion": 21 }, "downloads": { "server": { "sha1": %q, "size": 1 } } }`, strings.Repeat("a", 40)), "missing downloads.server.url"},
+		{"missing sha1", `{ "javaVersion": { "majorVersion": 21 }, "downloads": { "server": { "url": "https://example.invalid/server.jar", "size": 1 } } }`, "missing downloads.server.sha1"},
+		{"missing size", fmt.Sprintf(`{ "javaVersion": { "majorVersion": 21 }, "downloads": { "server": { "url": "https://example.invalid/server.jar", "sha1": %q } } }`, strings.Repeat("a", 40)), "missing downloads.server.size"},
 	}
 
 	for _, tc := range tests {
@@ -190,10 +214,10 @@ func TestRunVanillaWritesLaunchersJVMArgsAndState(t *testing.T) {
 		t.Fatalf("RunVanilla() error = %v", err)
 	}
 
-	if got := readTestFile(t, filepath.Join(root, "run.sh")); got != vanillaRunSh {
+	if got := readTestFile(t, filepath.Join(root, "run.sh")); got != vanillaRunSh(defaultJavaCommand) {
 		t.Fatalf("run.sh = %q, want vanilla launcher", got)
 	}
-	if got := readTestFile(t, filepath.Join(root, "run.bat")); got != vanillaRunBat {
+	if got := readTestFile(t, filepath.Join(root, "run.bat")); got != vanillaRunBat(defaultJavaCommand) {
 		t.Fatalf("run.bat = %q, want vanilla launcher", got)
 	}
 	if _, err := os.Stat(filepath.Join(root, "user_jvm_args.txt")); err != nil {
@@ -208,8 +232,45 @@ func TestRunVanillaWritesLaunchersJVMArgsAndState(t *testing.T) {
 	if got := strings.TrimSpace(readTestFile(t, stateFile(root, "server-jar-sha1"))); got != server.ServerSHA1 {
 		t.Fatalf("server-jar-sha1 = %q, want %q", got, server.ServerSHA1)
 	}
+	if got := strings.TrimSpace(readTestFile(t, stateFile(root, "java-major-version"))); got != fmt.Sprint(server.JavaMajorVersion) {
+		t.Fatalf("java-major-version = %q, want %d", got, server.JavaMajorVersion)
+	}
 	if got := strings.TrimSpace(readTestFile(t, stateFile(root, "installer-version.txt"))); got != Version {
 		t.Fatalf("installer-version.txt = %q, want %q", got, Version)
+	}
+}
+
+func TestRunVanillaUsesManifestJavaVersionAndCustomJavaPath(t *testing.T) {
+	root, server := vanillaFixture(t, "server")
+	server.JavaMajorVersion = 25
+	restore := stubRunVanilla(t, server)
+	defer restore()
+
+	var gotJavaPath string
+	var gotJavaMajor int
+	oldRequire := requireJava
+	requireJava = func(javaPath string, majorVersion int) error {
+		gotJavaPath = javaPath
+		gotJavaMajor = majorVersion
+		return nil
+	}
+	defer func() { requireJava = oldRequire }()
+
+	javaPath := "C:\\Program Files\\Java\\jdk-25\\bin\\java.exe"
+	if err := RunVanilla(Options{TargetDir: root, JavaPath: javaPath}); err != nil {
+		t.Fatalf("RunVanilla() error = %v", err)
+	}
+	if gotJavaPath != javaPath {
+		t.Fatalf("RequireJava path = %q, want %q", gotJavaPath, javaPath)
+	}
+	if gotJavaMajor != 25 {
+		t.Fatalf("RequireJava major = %d, want 25", gotJavaMajor)
+	}
+	if got := readTestFile(t, filepath.Join(root, "run.sh")); got != vanillaRunSh(javaPath) {
+		t.Fatalf("run.sh = %q, want custom Java launcher", got)
+	}
+	if got := readTestFile(t, filepath.Join(root, "run.bat")); got != vanillaRunBat(javaPath) {
+		t.Fatalf("run.bat = %q, want custom Java launcher", got)
 	}
 }
 
@@ -290,7 +351,7 @@ func stubVanillaFetch(t *testing.T, responses map[string]string) func() {
 func stubRunVanilla(t *testing.T, server VanillaServer) func() {
 	t.Helper()
 	oldFetch := fetchVanillaBytes
-	oldRequire := requireJava21
+	oldRequire := requireJava
 	fetchVanillaBytes = func(rawURL string) ([]byte, error) {
 		switch rawURL {
 		case vanillaVersionManifestURL:
@@ -299,15 +360,15 @@ func stubRunVanilla(t *testing.T, server VanillaServer) func() {
 				"versions": [{"id": %q, "url": "https://example.invalid/release.json"}]
 			}`, server.MinecraftVersion, server.MinecraftVersion)), nil
 		case "https://example.invalid/release.json":
-			return []byte(vanillaVersionJSON(server.ServerURL, server.ServerSHA1, server.ServerSize)), nil
+			return []byte(vanillaVersionJSONWithJava(server.ServerURL, server.ServerSHA1, server.ServerSize, server.JavaMajorVersion)), nil
 		default:
 			return nil, fmt.Errorf("unexpected URL %s", rawURL)
 		}
 	}
-	requireJava21 = func() error { return nil }
+	requireJava = func(string, int) error { return nil }
 	return func() {
 		fetchVanillaBytes = oldFetch
-		requireJava21 = oldRequire
+		requireJava = oldRequire
 	}
 }
 
@@ -324,11 +385,20 @@ func vanillaFixture(t *testing.T, serverContent string) (string, VanillaServer) 
 		ServerURL:        pathToFileURL(artifact),
 		ServerSHA1:       hex.EncodeToString(sum[:]),
 		ServerSize:       int64(len(serverContent)),
+		JavaMajorVersion: 21,
 	}
 }
 
 func vanillaVersionJSON(serverURL, sha1 string, size int64) string {
+	return vanillaVersionJSONWithJava(serverURL, sha1, size, 25)
+}
+
+func vanillaVersionJSONWithJava(serverURL, sha1 string, size int64, javaMajorVersion int) string {
 	return fmt.Sprintf(`{
+		"javaVersion": {
+			"component": "java-runtime-test",
+			"majorVersion": %d
+		},
 		"downloads": {
 			"server": {
 				"url": %q,
@@ -336,7 +406,7 @@ func vanillaVersionJSON(serverURL, sha1 string, size int64) string {
 				"size": %d
 			}
 		}
-	}`, serverURL, sha1, size)
+	}`, javaMajorVersion, serverURL, sha1, size)
 }
 
 func readTestFile(t *testing.T, path string) string {

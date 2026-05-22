@@ -8,13 +8,14 @@ import (
 
 type VanillaDryRunPlan struct {
 	MinecraftVersion string
+	JavaMajorVersion int
 	ServerJar        string
 	Launchers        string
 	JVMArgs          string
 	State            string
 }
 
-func PlanVanillaDryRun(targetDir string, server VanillaServer, force bool) (VanillaDryRunPlan, error) {
+func PlanVanillaDryRun(targetDir string, server VanillaServer, javaPath string, force bool) (VanillaDryRunPlan, error) {
 	if err := validateVanillaTargetDir(targetDir); err != nil {
 		return VanillaDryRunPlan{}, err
 	}
@@ -23,7 +24,7 @@ func PlanVanillaDryRun(targetDir string, server VanillaServer, force bool) (Vani
 	if err != nil {
 		return VanillaDryRunPlan{}, err
 	}
-	launchers, err := planVanillaLaunchers(targetDir)
+	launchers, err := planVanillaLaunchers(targetDir, javaPath)
 	if err != nil {
 		return VanillaDryRunPlan{}, err
 	}
@@ -38,6 +39,7 @@ func PlanVanillaDryRun(targetDir string, server VanillaServer, force bool) (Vani
 
 	return VanillaDryRunPlan{
 		MinecraftVersion: server.MinecraftVersion,
+		JavaMajorVersion: server.JavaMajorVersion,
 		ServerJar:        serverJar,
 		Launchers:        launchers,
 		JVMArgs:          jvmArgs,
@@ -49,6 +51,7 @@ func formatVanillaDryRunPlan(plan VanillaDryRunPlan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Vanilla dry run:\n")
 	fmt.Fprintf(&b, "  minecraft:      %s\n", plan.MinecraftVersion)
+	fmt.Fprintf(&b, "  java:           %d+\n", plan.JavaMajorVersion)
 	fmt.Fprintf(&b, "  server jar:     %s\n", plan.ServerJar)
 	fmt.Fprintf(&b, "  launchers:      %s\n", plan.Launchers)
 	fmt.Fprintf(&b, "  jvm args:       %s\n", plan.JVMArgs)
@@ -82,12 +85,12 @@ func planVanillaServerJar(targetDir, expectedSHA1 string, force bool) (string, e
 	return "would replace", nil
 }
 
-func planVanillaLaunchers(targetDir string) (string, error) {
-	sh, err := fileContentStatus(targetPath(targetDir, "run.sh"), vanillaRunSh)
+func planVanillaLaunchers(targetDir, javaPath string) (string, error) {
+	sh, err := fileContentStatus(targetPath(targetDir, "run.sh"), vanillaRunSh(javaPath))
 	if err != nil {
 		return "", err
 	}
-	bat, err := fileContentStatus(targetPath(targetDir, "run.bat"), vanillaRunBat)
+	bat, err := fileContentStatus(targetPath(targetDir, "run.bat"), vanillaRunBat(javaPath))
 	if err != nil {
 		return "", err
 	}
@@ -122,6 +125,7 @@ func planVanillaState(targetDir string, server VanillaServer) (string, error) {
 	expected := map[string]string{
 		"install-type":          "vanilla\n",
 		"minecraft-version":     server.MinecraftVersion + "\n",
+		"java-major-version":    fmt.Sprintf("%d\n", server.JavaMajorVersion),
 		"server-jar-sha1":       server.ServerSHA1 + "\n",
 		"installer-version.txt": Version + "\n",
 	}
