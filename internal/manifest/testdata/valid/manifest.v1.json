@@ -3,6 +3,9 @@
   "pack": "varda",
   "version": "0.1.4",
   "minecraft": "1.21.1",
+  "java": {
+    "major": 21
+  },
   "loader": {
     "type": "neoforge",
     "version": "21.1.228",

@@ -16,6 +16,10 @@ func installerVersionPath(targetDir string) string {
 	return stateFile(targetDir, "installer-version.txt")
 }
 
+func javaMajorVersionPath(targetDir string) string {
+	return stateFile(targetDir, "java-major-version")
+}
+
 func cacheDir(targetDir string) string {
 	return targetPath(stateDir(targetDir), "cache")
 }
@@ -139,6 +143,9 @@ func WriteInstallDiagnostics(targetDir string, manifest Manifest) error {
 	if err := os.WriteFile(packVersionPath(targetDir), []byte(manifest.Version+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write pack version: %w", err)
 	}
+	if err := os.WriteFile(javaMajorVersionPath(targetDir), []byte(fmt.Sprintf("%d\n", manifest.Java.Major)), 0o644); err != nil {
+		return fmt.Errorf("write java major version: %w", err)
+	}
 	if err := os.WriteFile(installerVersionPath(targetDir), []byte(Version+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write installer version: %w", err)
 	}
@@ -161,11 +168,12 @@ func FetchRemoteManifest(rawURL string) (Manifest, error) {
 
 func manifestCheckSummary(manifest Manifest) string {
 	return fmt.Sprintf(
-		"Manifest check:\n  schema:         %d\n  pack:           %s\n  version:        %s\n  minecraft:      %s\n  loader:         %s\n  mods:           %d (sha1)\n  server config:  %s\n",
+		"Manifest check:\n  schema:         %d\n  pack:           %s\n  version:        %s\n  minecraft:      %s\n  java.major:     %d\n  loader:         %s\n  mods:           %d (sha1)\n  server config:  %s\n",
 		manifest.SchemaVersion,
 		packSummary(manifest.Pack),
 		manifest.Version,
 		manifest.Minecraft,
+		manifest.Java.Major,
 		loaderSummary(manifest.Loader),
 		len(manifest.Mods),
 		serverConfigSummary(manifest.ServerConfig),

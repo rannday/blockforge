@@ -36,6 +36,9 @@ func TestRootManifestFixtureValidatesWithPortableConfigURL(t *testing.T) {
 	if manifest.Minecraft != "1.21.1" {
 		t.Fatalf("minecraft = %q, want 1.21.1", manifest.Minecraft)
 	}
+	if manifest.Java.Major != 21 {
+		t.Fatalf("java.major = %d, want 21", manifest.Java.Major)
+	}
 	if manifest.Loader.Type != "neoforge" {
 		t.Fatalf("loader.type = %q, want neoforge", manifest.Loader.Type)
 	}

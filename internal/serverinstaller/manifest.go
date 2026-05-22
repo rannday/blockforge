@@ -16,9 +16,14 @@ type Manifest struct {
 	Pack          string                `json:"pack,omitempty"`
 	Version       string                `json:"version"`
 	Minecraft     string                `json:"minecraft"`
+	Java          JavaManifest          `json:"java"`
 	Loader        LoaderManifest        `json:"loader"`
 	ServerConfig  *ServerConfigManifest `json:"server_config"`
 	Mods          []ManifestMod         `json:"mods"`
+}
+
+type JavaManifest struct {
+	Major int `json:"major"`
 }
 
 type LoaderManifest struct {
@@ -84,6 +89,9 @@ func (m Manifest) Validate() error {
 	}
 	if m.Minecraft == "" {
 		return fmt.Errorf("manifest minecraft must be non-empty")
+	}
+	if m.Java.Major < 8 {
+		return fmt.Errorf("manifest java.major must be at least 8")
 	}
 	if m.Loader.Type == "" {
 		return fmt.Errorf("manifest loader.type must be non-empty")

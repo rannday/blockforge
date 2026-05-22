@@ -8,6 +8,7 @@
     "version",
     "schema_version",
     "minecraft",
+    "java",
     "loader",
     "server_config",
     "mods"
@@ -31,6 +32,20 @@
     "minecraft": {
       "type": "string",
       "minLength": 1
+    },
+    "java": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "major"
+      ],
+      "properties": {
+        "major": {
+          "type": "integer",
+          "minimum": 8,
+          "description": "Required Java major version for running this Minecraft server."
+        }
+      }
     },
     "server_config": {
       "type": "object",

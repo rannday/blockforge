@@ -62,10 +62,13 @@ func TestParseOptionsRejectsVanillaConflicts(t *testing.T) {
 	}
 }
 
-func TestParseOptionsRejectsJavaPathWithoutVanilla(t *testing.T) {
-	_, err := parseOptions([]string{"--java", "custom-java", "--manifest", "https://example.invalid/manifest.json"})
-	if err == nil || !strings.Contains(err.Error(), "--java") {
-		t.Fatalf("parseOptions() error = %v, want --java rejection", err)
+func TestParseOptionsSupportsJavaWithoutVanilla(t *testing.T) {
+	opts, err := parseOptions([]string{"--java", "custom-java", "--manifest", "https://example.invalid/manifest.json"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.JavaPath != "custom-java" {
+		t.Fatalf("parseOptions() JavaPath = %q, want custom-java", opts.JavaPath)
 	}
 }
 

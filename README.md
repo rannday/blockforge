@@ -15,7 +15,7 @@ https://rannday.github.io/blockforge-manifest/manifest.schema.json
 
 ## Requirements
 
-- Java version required by the target server metadata. Vanilla reads Mojang/Piston `javaVersion.majorVersion`; current NeoForge manifest installs still require Java 21+.
+- Java version required by the target server metadata. Manifest mode reads root `manifest.java.major`; vanilla reads Mojang/Piston `javaVersion.majorVersion`.
 - Network access
 - Linux, macOS, or Windows binary for target platform
 - GitHub CLI (`gh`) for release uploads
@@ -70,7 +70,7 @@ Flags:
 - `-c`, `--check-manifest`
 - `--vanilla`
 - `--dry-run`
-- `-j`, `--java` (vanilla only for now)
+- `-j`, `--java`
 - `-f`, `--force`
 - `-w`, `--workers`
 - `-v`, `--version`
@@ -87,7 +87,7 @@ Unmanaged files and directories in `mods/` are listed as planned removals but ar
 
 ## Managed Files
 
-Manifest schema is only for modded modpacks. It does not support vanilla. Vanilla desired state comes from Mojang/Piston `latest.release` metadata instead.
+Manifest schema is only for modded modpacks. It does not support vanilla. Vanilla desired state comes from Mojang/Piston `latest.release` metadata instead. Manifest mode also reads required Java major version from `manifest.java.major`.
 
 Blockforge treats `mods/` as manifest-managed. Mods not listed in the manifest are removed during reconciliation. If you add local extra mods, they must be re-added after each update or included in the manifest.
 
@@ -107,8 +107,12 @@ Vanilla mode manages:
 - `.blockforge/java-major-version`
 - `.blockforge/installer-version.txt`
 
+Manifest mode also writes `.blockforge/java-major-version`.
+
 Vanilla mode rejects directories with `.blockforge/manifest-url` so modded and vanilla installs are not mixed.
 
 ## blockforge-manifest
 
 `blockforge-manifest` owns the manifest schema and published example manifests. This repo only publishes installer archives and `checksums.txt`.
+
+Manifest producers must publish root `java.major`.

@@ -47,6 +47,13 @@ func TestManifestValidateRejectsMissingRequiredRuntimeFields(t *testing.T) {
 			wantErr: "minecraft",
 		},
 		{
+			name: "java",
+			mutate: func(m *Manifest) {
+				m.Java.Major = 0
+			},
+			wantErr: "manifest java.major",
+		},
+		{
 			name: "loader_sha1",
 			mutate: func(m *Manifest) {
 				m.Loader.SHA1 = ""

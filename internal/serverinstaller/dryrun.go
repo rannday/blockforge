@@ -103,6 +103,7 @@ func formatDryRunPlan(plan DryRunPlan) string {
 	fmt.Fprintf(&b, "  pack:            %s\n", packSummary(plan.Manifest.Pack))
 	fmt.Fprintf(&b, "  version:         %s\n", plan.Manifest.Version)
 	fmt.Fprintf(&b, "  minecraft:       %s\n", plan.Manifest.Minecraft)
+	fmt.Fprintf(&b, "  java.major:      %d\n", plan.Manifest.Java.Major)
 	fmt.Fprintf(&b, "  loader:          %s\n", loaderSummary(plan.Manifest.Loader))
 
 	if plan.ApplyServerConfig {

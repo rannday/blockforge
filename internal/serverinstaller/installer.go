@@ -81,7 +81,7 @@ func Run(args []string) error {
 		return nil
 	}
 
-	if err := RequireJava21(); err != nil {
+	if err := requireManifestJava(opts.JavaPath, manifest.Java.Major); err != nil {
 		return err
 	}
 
@@ -195,8 +195,6 @@ func parseOptions(args []string) (Options, error) {
 		if opts.workersSet {
 			return opts, fmt.Errorf("--vanilla cannot be combined with --workers")
 		}
-	} else if opts.javaSet {
-		return opts, fmt.Errorf("--java currently only applies to --vanilla")
 	}
 	if opts.DownloadWorkers < 1 || opts.DownloadWorkers > 16 {
 		return opts, fmt.Errorf("--workers must be between 1 and 16")
@@ -238,9 +236,13 @@ func printInstallerUsage(w io.Writer) {
 	fmt.Fprintln(w, "      --dry-run              Show planned changes without modifying files")
 	fmt.Fprintln(w, "  -f, --force                Re-download/reinstall files instead of keeping existing files")
 	fmt.Fprintln(w, "  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)")
-	fmt.Fprintln(w, "  -j, --java PATH            Java executable path for vanilla installs (default: java)")
+	fmt.Fprintln(w, "  -j, --java PATH            Java executable path for vanilla and manifest installs (default: java)")
 	fmt.Fprintln(w, "  -v, --version              Print installer version and exit")
 	fmt.Fprintln(w, "  -h, --help                 Show this help text and exit")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "First install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.")
+}
+
+func requireManifestJava(javaPath string, majorVersion int) error {
+	return requireJava(javaPath, majorVersion)
 }

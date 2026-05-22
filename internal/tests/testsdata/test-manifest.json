@@ -3,6 +3,9 @@
   "pack": "blockforge-test",
   "schema_version": 1,
   "minecraft": "1.21.1",
+  "java": {
+    "major": 21
+  },
   "loader": {
     "type": "neoforge",
     "version": "21.1.229",

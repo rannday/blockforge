@@ -10,10 +10,6 @@ import (
 
 var javaVersionPattern = regexp.MustCompile(`version "([^"]+)"`)
 
-func RequireJava21() error {
-	return RequireJava("java", 21)
-}
-
 func RequireJava(javaPath string, majorVersion int) error {
 	if javaPath == "" {
 		javaPath = "java"

@@ -162,6 +162,9 @@ func TestLoadManifestFromBytes(t *testing.T) {
   "pack": "varda",
   "version": "0.1.4",
   "minecraft": "1.21.1",
+  "java": {
+    "major": 21
+  },
   "loader": {
     "type": "neoforge",
     "version": "21.1.228",
@@ -193,6 +196,9 @@ func TestLoadManifestFromBytes(t *testing.T) {
 	if manifest.Loader.Type != "neoforge" || manifest.Loader.Version != "21.1.228" || manifest.Loader.SHA1 != "0123456789abcdef0123456789abcdef01234567" {
 		t.Fatalf("LoadManifestFromBytes() loader = %#v", manifest.Loader)
 	}
+	if manifest.Java.Major != 21 {
+		t.Fatalf("LoadManifestFromBytes() java = %#v", manifest.Java)
+	}
 	if len(manifest.Mods) != 1 || manifest.Mods[0].URL != "https://example.invalid/example.jar" {
 		t.Fatalf("LoadManifestFromBytes() mods = %#v", manifest.Mods)
 	}
@@ -208,6 +214,52 @@ func TestManifestValidateAcceptsSimplifiedManifest(t *testing.T) {
 
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestManifestValidateRejectsMissingJavaMetadata(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "missing root java",
+			raw:  strings.Replace(validManifestJSON(), "  \"java\": {\n    \"major\": 21\n  },\n", "", 1),
+		},
+		{
+			name: "missing java major",
+			raw:  strings.Replace(validManifestJSON(), "  \"java\": {\n    \"major\": 21\n  },\n", "  \"java\": {},\n", 1),
+		},
+		{
+			name: "below minimum",
+			raw:  strings.Replace(validManifestJSON(), `"major": 21`, `"major": 7`, 1),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			manifest, err := LoadManifestFromBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("LoadManifestFromBytes() error = %v", err)
+			}
+			if err := manifest.Validate(); err == nil || !strings.Contains(strings.ToLower(err.Error()), "manifest java.major") {
+				t.Fatalf("Validate() error = %v, want java.major rejection", err)
+			}
+		})
+	}
+}
+
+func TestLoadManifestFromBytesRejectsInvalidJavaType(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Replace(validManifestJSON(), `"major": 21`, `"major": "21"`, 1)
+	if _, err := LoadManifestFromBytes([]byte(raw)); err == nil || !strings.Contains(strings.ToLower(err.Error()), "decode manifest") {
+		t.Fatalf("LoadManifestFromBytes() error = %v, want decode rejection", err)
 	}
 }
 
@@ -423,6 +475,7 @@ func TestWriteInstallDiagnosticsWritesOnlyDiagnostics(t *testing.T) {
 
 	for _, path := range []string{
 		filepath.Join(root, ".blockforge", "pack-version.txt"),
+		filepath.Join(root, ".blockforge", "java-major-version"),
 		filepath.Join(root, ".blockforge", "installer-version.txt"),
 	} {
 		if _, err := os.Stat(path); err != nil {
@@ -437,6 +490,13 @@ func TestWriteInstallDiagnosticsWritesOnlyDiagnostics(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("unexpected persisted file %s: %v", path, err)
 		}
+	}
+	javaMajor, err := os.ReadFile(filepath.Join(root, ".blockforge", "java-major-version"))
+	if err != nil {
+		t.Fatalf("ReadFile(java-major-version) error = %v", err)
+	}
+	if strings.TrimSpace(string(javaMajor)) != "21" {
+		t.Fatalf("java-major-version = %q, want 21", javaMajor)
 	}
 }
 
@@ -689,6 +749,7 @@ func TestDryRunDoesNotRequireTargetDirOrCreateIt(t *testing.T) {
 	}
 	for _, text := range []string{
 		"Dry run:",
+		"java.major:",
 		"mods download:   1",
 		"Dry run complete. No files changed.",
 	} {
@@ -837,7 +898,7 @@ func TestManifestJSONTagsKeepRequiredFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(raw)
-	for _, field := range []string{`"version"`, `"minecraft"`, `"loader"`, `"server_config"`, `"mods"`} {
+	for _, field := range []string{`"version"`, `"minecraft"`, `"java"`, `"loader"`, `"server_config"`, `"mods"`} {
 		if !strings.Contains(got, field) {
 			t.Fatalf("Marshal(Manifest{}) = %s, missing %s", got, field)
 		}
@@ -852,6 +913,37 @@ func TestManifestJSONTagsKeepRequiredFields(t *testing.T) {
 		if !strings.Contains(got, field) {
 			t.Fatalf("Marshal(ManifestMod{}) = %s, missing %s", got, field)
 		}
+	}
+}
+
+func TestRequireManifestJavaUsesRequestedMajor(t *testing.T) {
+	t.Parallel()
+
+	oldRequireJava := requireJava
+	defer func() { requireJava = oldRequireJava }()
+
+	var gotJavaPath string
+	var gotMajor int
+	requireJava = func(javaPath string, majorVersion int) error {
+		gotJavaPath = javaPath
+		gotMajor = majorVersion
+		return nil
+	}
+
+	if err := requireManifestJava("custom-java", 17); err != nil {
+		t.Fatalf("requireManifestJava() error = %v", err)
+	}
+	if gotJavaPath != "custom-java" || gotMajor != 17 {
+		t.Fatalf("requireManifestJava() = %q, %d; want custom-java, 17", gotJavaPath, gotMajor)
+	}
+}
+
+func TestManifestCheckSummaryIncludesJavaMajor(t *testing.T) {
+	t.Parallel()
+
+	summary := manifestCheckSummary(validTestManifest())
+	if !strings.Contains(summary, "java.major:") {
+		t.Fatalf("manifestCheckSummary() missing java.major:\n%s", summary)
 	}
 }
 
@@ -950,7 +1042,7 @@ func TestInstallerUsageText(t *testing.T) {
 	var buf bytes.Buffer
 	printInstallerUsage(&buf)
 	got := buf.String()
-	want := "Usage: blockforge [options]\n\nInstall or update a Minecraft server.\n\nOptions:\n  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)\n  -d, --dir DIR              Server install directory (default: .)\n  -c, --check-manifest       Validate manifest and print a summary without changing files\n      --vanilla              Install/update latest recommended vanilla release\n      --dry-run              Show planned changes without modifying files\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)\n  -j, --java PATH            Java executable path for vanilla installs (default: java)\n  -v, --version              Print installer version and exit\n  -h, --help                 Show this help text and exit\n\nFirst install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.\n"
+	want := "Usage: blockforge [options]\n\nInstall or update a Minecraft server.\n\nOptions:\n  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)\n  -d, --dir DIR              Server install directory (default: .)\n  -c, --check-manifest       Validate manifest and print a summary without changing files\n      --vanilla              Install/update latest recommended vanilla release\n      --dry-run              Show planned changes without modifying files\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)\n  -j, --java PATH            Java executable path for vanilla and manifest installs (default: java)\n  -v, --version              Print installer version and exit\n  -h, --help                 Show this help text and exit\n\nFirst install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.\n"
 	if got != want {
 		t.Fatalf("usage text mismatch:\n--- got ---\n%s--- want ---\n%s", got, want)
 	}
@@ -1613,6 +1705,7 @@ func validTestManifest() Manifest {
 		Pack:          "varda",
 		Version:       "0.1.4",
 		Minecraft:     "1.21.1",
+		Java:          JavaManifest{Major: 21},
 		Loader: LoaderManifest{
 			Type:         "neoforge",
 			Version:      "21.1.228",
@@ -1641,6 +1734,9 @@ func validManifestJSON() string {
   "pack": "testpack",
   "version": "0.1.4",
   "minecraft": "1.21.1",
+  "java": {
+    "major": 21
+  },
   "loader": {
     "type": "neoforge",
     "version": "21.1.228",
