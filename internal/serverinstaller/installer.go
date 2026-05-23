@@ -2,6 +2,7 @@
 package serverinstaller
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,10 +26,13 @@ type Options struct {
 	manifestSet      bool
 	checkManifestSet bool
 	workersSet       bool
-	javaSet          bool
 }
 
 func Run(args []string) error {
+	return run(context.Background(), defaultDeps, args)
+}
+
+func run(ctx context.Context, deps runtimeDeps, args []string) error {
 	opts, err := parseOptions(args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -47,7 +51,7 @@ func Run(args []string) error {
 	}
 
 	if opts.Vanilla {
-		return RunVanilla(opts)
+		return runVanilla(ctx, deps, opts)
 	}
 
 	manifestSource, err := resolveManifestSource(opts.TargetDir, opts.ManifestSource)
@@ -81,7 +85,7 @@ func Run(args []string) error {
 		return nil
 	}
 
-	if err := requireManifestJava(opts.JavaPath, manifest.Java.Major); err != nil {
+	if err := requireJavaWithDeps(deps, opts.JavaPath, manifest.Java.Major); err != nil {
 		return err
 	}
 
@@ -108,7 +112,7 @@ func Run(args []string) error {
 		fmt.Printf("Server config already applied for manifest version %s; skipping.\n", manifest.Version)
 	}
 
-	loaderVersion, err := InstallOrUpdateLoader(opts.TargetDir, manifest.Loader, opts.Force)
+	loaderVersion, err := InstallOrUpdateLoader(opts.TargetDir, manifest.Loader, opts.JavaPath, opts.Force)
 	if err != nil {
 		return err
 	}
@@ -160,12 +164,10 @@ func parseOptions(args []string) (Options, error) {
 	fs.BoolVar(&opts.Force, "f", false, "re-download/reinstall files")
 	fs.StringVar(&opts.ManifestSource, "manifest", "", "manifest source URL or local path")
 	fs.StringVar(&opts.ManifestSource, "m", "", "manifest source URL or local path")
-	fs.StringVar(&opts.ManifestSource, "manifest-url", "", "deprecated manifest URL alias")
 	fs.StringVar(&opts.JavaPath, "java", "java", "java executable path")
 	fs.StringVar(&opts.JavaPath, "j", "java", "java executable path")
 	fs.IntVar(&opts.DownloadWorkers, "workers", 6, "mod download worker count")
 	fs.IntVar(&opts.DownloadWorkers, "w", 6, "mod download worker count")
-	fs.IntVar(&opts.DownloadWorkers, "download-workers", 6, "mod download worker count")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -180,10 +182,9 @@ func parseOptions(args []string) (Options, error) {
 		return opts, flag.ErrHelp
 	}
 
-	opts.manifestSet = flagWasSupplied(args, "manifest", "m", "manifest-url")
+	opts.manifestSet = flagWasSupplied(args, "manifest", "m")
 	opts.checkManifestSet = flagWasSupplied(args, "check-manifest", "c")
-	opts.workersSet = flagWasSupplied(args, "workers", "w", "download-workers")
-	opts.javaSet = flagWasSupplied(args, "java", "j")
+	opts.workersSet = flagWasSupplied(args, "workers", "w")
 
 	if opts.Vanilla {
 		if opts.manifestSet {
@@ -240,9 +241,5 @@ func printInstallerUsage(w io.Writer) {
 	fmt.Fprintln(w, "  -v, --version              Print installer version and exit")
 	fmt.Fprintln(w, "  -h, --help                 Show this help text and exit")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "First install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.")
-}
-
-func requireManifestJava(javaPath string, majorVersion int) error {
-	return requireJava(javaPath, majorVersion)
+	fmt.Fprintln(w, "First install requires --manifest SOURCE. Later runs reuse the saved source from .blockforge/manifest-url.")
 }

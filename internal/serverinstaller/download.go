@@ -1,9 +1,11 @@
 package serverinstaller
 
 import (
-	"crypto/tls"
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,18 +15,24 @@ import (
 	"time"
 )
 
-const maxManifestSize = 5 << 20
+const (
+	maxManifestSize    = 5 << 20
+	maxDownloadTries   = 2
+	httpErrorBodyLimit = 1 << 20
+)
 
-var httpClient = &http.Client{
-	Timeout: 10 * time.Minute,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
-	},
+type downloadStatusError struct {
+	StatusCode int
+	Status     string
+	Body       string
 }
 
-var statFile = os.Stat
-var renameFile = os.Rename
-var removeFile = os.Remove
+func (e *downloadStatusError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("download failed: HTTP %d %s", e.StatusCode, e.Status)
+	}
+	return fmt.Sprintf("download failed: HTTP %d %s\n%s", e.StatusCode, e.Status, e.Body)
+}
 
 type DownloadChecks struct {
 	SHA1 string
@@ -32,60 +40,47 @@ type DownloadChecks struct {
 }
 
 func downloadURLToBytes(rawURL string) ([]byte, error) {
-	source, err := openDownload(rawURL)
-	if err != nil {
-		return nil, err
-	}
-	defer source.Close()
+	return downloadURLToBytesCtx(context.Background(), defaultDeps, rawURL)
+}
 
-	limited := io.LimitReader(source, maxManifestSize+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxManifestSize {
-		return nil, fmt.Errorf("manifest exceeds maximum size of %d bytes", maxManifestSize)
-	}
-	return data, nil
+func downloadURLToBytesCtx(ctx context.Context, deps runtimeDeps, rawURL string) ([]byte, error) {
+	deps = deps.withDefaults()
+	data, err := downloadWithRetry(ctx, deps, rawURL, func(source io.ReadCloser) ([]byte, error) {
+		defer source.Close()
+
+		limited := io.LimitReader(source, maxManifestSize+1)
+		data, err := io.ReadAll(limited)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > maxManifestSize {
+			return nil, fmt.Errorf("manifest exceeds maximum size of %d bytes", maxManifestSize)
+		}
+		return data, nil
+	})
+	return data, err
 }
 
 func downloadToFile(rawURL, targetPath string, force bool, label string, checks ...DownloadChecks) error {
+	return downloadToFileCtx(context.Background(), defaultDeps, rawURL, targetPath, force, label, checks...)
+}
+
+func downloadToFileCtx(ctx context.Context, deps runtimeDeps, rawURL, targetPath string, force bool, label string, checks ...DownloadChecks) error {
+	deps = deps.withDefaults()
 	var check DownloadChecks
 	if len(checks) > 0 {
 		check = checks[0]
 	}
 
-	if !force {
-		info, err := statFile(targetPath)
-		if err == nil {
-			if info.IsDir() {
-				return fmt.Errorf("target path is a directory: %s", targetPath)
-			}
-			if info.Size() > 0 {
-				if check.Size > 0 && info.Size() != check.Size {
-					goto download
-				}
-				if check.SHA1 != "" {
-					actual, err := sha1File(targetPath)
-					if err != nil {
-						return err
-					}
-					if strings.EqualFold(actual, check.SHA1) {
-						fmt.Printf("Keeping current %s: %s\n", label, targetPath)
-						return nil
-					}
-					goto download
-				}
-				fmt.Printf("Keeping current %s: %s\n", label, targetPath)
-				return nil
-			}
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
+	action, err := classifyManagedFile(targetPath, FileCheck{SHA1: check.SHA1, Size: check.Size}, force)
+	if err != nil {
+		return err
+	}
+	if action == FileActionCurrent {
+		fmt.Printf("Keeping current %s: %s\n", label, targetPath)
+		return nil
 	}
 
-download:
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
@@ -99,20 +94,26 @@ download:
 
 	fmt.Printf("Downloading %s...\n", label)
 
-	if err := writeDownloadedContent(tmp, rawURL); err != nil {
+	_, writeErr := downloadWithRetry(ctx, deps, rawURL, func(source io.ReadCloser) ([]byte, error) {
+		defer source.Close()
+
+		if _, err := io.Copy(tmp, source); err != nil {
+			return nil, err
+		}
+		if check.Size > 0 {
+			info, err := tmp.Stat()
+			if err != nil {
+				return nil, err
+			}
+			if info.Size() != check.Size {
+				return nil, fmt.Errorf("%s size mismatch: got %d want %d", label, info.Size(), check.Size)
+			}
+		}
+		return nil, nil
+	})
+	if writeErr != nil {
 		tmp.Close()
-		return err
-	}
-	if check.Size > 0 {
-		info, err := tmp.Stat()
-		if err != nil {
-			tmp.Close()
-			return err
-		}
-		if info.Size() != check.Size {
-			tmp.Close()
-			return fmt.Errorf("%s size mismatch: got %d want %d", label, info.Size(), check.Size)
-		}
+		return writeErr
 	}
 	if err := tmp.Close(); err != nil {
 		return err
@@ -123,29 +124,75 @@ download:
 		}
 	}
 
-	return replaceFile(tmpName, targetPath)
+	return replaceFileWithDeps(deps, tmpName, targetPath)
+}
+
+func downloadWithRetry[T any](ctx context.Context, deps runtimeDeps, rawURL string, fn func(io.ReadCloser) (T, error)) (T, error) {
+	var zero T
+	var lastErr error
+	for attempt := 1; attempt <= maxDownloadTries; attempt++ {
+		if ctx.Err() != nil {
+			return zero, ctx.Err()
+		}
+		source, err := openDownload(ctx, deps, rawURL)
+		if err != nil {
+			lastErr = err
+			if attempt < maxDownloadTries && isRetryableDownloadError(err) {
+				continue
+			}
+			return zero, err
+		}
+
+		result, err := fn(source)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if attempt < maxDownloadTries && isRetryableDownloadError(err) {
+			continue
+		}
+		return zero, err
+	}
+	return zero, lastErr
+}
+
+func isRetryableDownloadError(err error) bool {
+	var statusErr *downloadStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode >= 500
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return false
 }
 
 func replaceFile(tempPath, targetPath string) error {
-	if _, err := statFile(targetPath); err == nil {
+	return replaceFileWithDeps(defaultDeps, tempPath, targetPath)
+}
+
+func replaceFileWithDeps(deps runtimeDeps, tempPath, targetPath string) error {
+	deps = deps.withDefaults()
+	if _, err := deps.stat(targetPath); err == nil {
 		backupPath := fmt.Sprintf("%s.bak-%d-%d", targetPath, os.Getpid(), time.Now().UnixNano())
 
-		if err := renameFile(targetPath, backupPath); err != nil {
+		if err := deps.rename(targetPath, backupPath); err != nil {
 			return err
 		}
 
-		if err := renameFile(tempPath, targetPath); err != nil {
-			restoreErr := renameFile(backupPath, targetPath)
+		if err := deps.rename(tempPath, targetPath); err != nil {
+			restoreErr := deps.rename(backupPath, targetPath)
 			if restoreErr != nil {
 				return fmt.Errorf("%w; restore failed: %v", err, restoreErr)
 			}
 			return err
 		}
 
-		_ = removeFile(backupPath)
+		_ = deps.remove(backupPath)
 		return nil
 	} else if os.IsNotExist(err) {
-		if err := renameFile(tempPath, targetPath); err != nil {
+		if err := deps.rename(tempPath, targetPath); err != nil {
 			return err
 		}
 		return nil
@@ -154,18 +201,8 @@ func replaceFile(tempPath, targetPath string) error {
 	}
 }
 
-func writeDownloadedContent(dest *os.File, rawURL string) error {
-	source, err := openDownload(rawURL)
-	if err != nil {
-		return err
-	}
-	defer source.Close()
-
-	_, err = io.Copy(dest, source)
-	return err
-}
-
-func openDownload(rawURL string) (io.ReadCloser, error) {
+func openDownload(ctx context.Context, deps runtimeDeps, rawURL string) (io.ReadCloser, error) {
+	deps = deps.withDefaults()
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
@@ -184,14 +221,22 @@ func openDownload(rawURL string) (io.ReadCloser, error) {
 		return os.Open(sourcePath)
 
 	case "http", "https":
-		resp, err := httpClient.Get(rawURL)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := deps.httpClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, httpErrorBodyLimit))
 			resp.Body.Close()
-			return nil, fmt.Errorf("download failed: HTTP %d %s\n%s", resp.StatusCode, resp.Status, strings.TrimSpace(string(body)))
+			return nil, &downloadStatusError{
+				StatusCode: resp.StatusCode,
+				Status:     resp.Status,
+				Body:       strings.TrimSpace(string(body)),
+			}
 		}
 		return resp.Body, nil
 

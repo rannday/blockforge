@@ -6,7 +6,26 @@ import (
 	"strings"
 )
 
+type PlanSummaryItem struct {
+	Kind  string
+	Value string
+}
+
+type PlannedAction struct {
+	Kind   string
+	Path   string
+	Action string
+	Reason string
+}
+
+type InstallPlan struct {
+	Mode    string
+	Summary []PlanSummaryItem
+	Actions []PlannedAction
+}
+
 type DryRunPlan struct {
+	Plan                InstallPlan
 	TargetDir           string
 	ManifestSource      string
 	Manifest            Manifest
@@ -39,6 +58,13 @@ func PlanDryRun(targetDir, manifestSource string, manifest Manifest, force bool)
 	}
 
 	return DryRunPlan{
+		Plan: InstallPlan{
+			Mode: "manifest",
+			Summary: []PlanSummaryItem{
+				{Kind: "target dir", Value: targetDir},
+				{Kind: "manifest source", Value: manifestSource},
+			},
+		},
 		TargetDir:           targetDir,
 		ManifestSource:      manifestSource,
 		Manifest:            manifest,

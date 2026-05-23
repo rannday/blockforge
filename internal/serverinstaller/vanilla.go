@@ -1,20 +1,23 @@
 package serverinstaller
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 )
 
-var requireJava = RequireJava
-var downloadVanillaFile = downloadToFile
-
 func RunVanilla(opts Options) error {
+	return runVanilla(context.Background(), defaultDeps, opts)
+}
+
+func runVanilla(ctx context.Context, deps runtimeDeps, opts Options) error {
+	deps = deps.withDefaults()
 	if err := validateVanillaTargetDir(opts.TargetDir); err != nil {
 		return err
 	}
 
-	server, err := FetchLatestVanillaServer()
+	server, err := fetchLatestVanillaServer(ctx, deps)
 	if err != nil {
 		return err
 	}
@@ -28,7 +31,7 @@ func RunVanilla(opts Options) error {
 		return nil
 	}
 
-	if err := requireJava(opts.JavaPath, server.JavaMajorVersion); err != nil {
+	if err := requireJavaWithDeps(deps, opts.JavaPath, server.JavaMajorVersion); err != nil {
 		return err
 	}
 
@@ -37,7 +40,9 @@ func RunVanilla(opts Options) error {
 	}
 
 	serverJar := targetPath(opts.TargetDir, "server.jar")
-	if err := downloadVanillaFile(
+	if err := downloadToFileCtx(
+		ctx,
+		deps,
 		server.ServerURL,
 		serverJar,
 		opts.Force,
@@ -85,19 +90,22 @@ func WriteVanillaState(targetDir string, server VanillaServer) error {
 	if err := os.MkdirAll(stateDir(targetDir), 0o755); err != nil {
 		return fmt.Errorf("create blockforge state dir: %w", err)
 	}
-	files := map[string]string{
+	for name, content := range vanillaStateFiles(server) {
+		if err := os.WriteFile(stateFile(targetDir, name), []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write vanilla state %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func vanillaStateFiles(server VanillaServer) map[string]string {
+	return map[string]string{
 		"install-type":          "vanilla\n",
 		"minecraft-version":     server.MinecraftVersion + "\n",
 		"java-major-version":    fmt.Sprintf("%d\n", server.JavaMajorVersion),
 		"server-jar-sha1":       server.ServerSHA1 + "\n",
 		"installer-version.txt": Version + "\n",
 	}
-	for name, content := range files {
-		if err := os.WriteFile(stateFile(targetDir, name), []byte(content), 0o644); err != nil {
-			return fmt.Errorf("write vanilla state %s: %w", name, err)
-		}
-	}
-	return nil
 }
 
 func vanillaInstallTypePath(targetDir string) string {

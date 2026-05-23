@@ -7,19 +7,21 @@ import (
 
 func WriteJvmArgs(targetDir string, force bool) error {
 	path := targetPath(targetDir, "user_jvm_args.txt")
-	if !force {
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			fmt.Printf("Keeping current JVM args: %s\n", path)
-			return nil
-		} else if err != nil && !os.IsNotExist(err) {
-			return err
-		}
+	action, err := classifyManagedContentFile(path, jvmArgsContent(), force)
+	if err != nil {
+		return err
+	}
+	if action == FileActionCurrent {
+		fmt.Printf("Keeping current JVM args: %s\n", path)
+		return nil
 	}
 
-	const content = "# JVM memory settings for this server.\n" +
+	return os.WriteFile(path, []byte(jvmArgsContent()), 0o644)
+}
+
+func jvmArgsContent() string {
+	return "# JVM memory settings for this server.\n" +
 		"# Adjust these based on available server RAM.\n" +
 		"-Xms4G\n" +
 		"-Xmx6G\n"
-
-	return os.WriteFile(path, []byte(content), 0o644)
 }

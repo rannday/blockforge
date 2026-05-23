@@ -2,11 +2,11 @@ package serverinstaller
 
 import (
 	"fmt"
-	"os"
 	"strings"
 )
 
 type VanillaDryRunPlan struct {
+	Plan             InstallPlan
 	MinecraftVersion string
 	JavaMajorVersion int
 	ServerJar        string
@@ -38,6 +38,14 @@ func PlanVanillaDryRun(targetDir string, server VanillaServer, javaPath string, 
 	}
 
 	return VanillaDryRunPlan{
+		Plan: InstallPlan{
+			Mode: "vanilla",
+			Summary: []PlanSummaryItem{
+				{Kind: "target dir", Value: targetDir},
+				{Kind: "minecraft", Value: server.MinecraftVersion},
+				{Kind: "java", Value: fmt.Sprintf("%d+", server.JavaMajorVersion)},
+			},
+		},
 		MinecraftVersion: server.MinecraftVersion,
 		JavaMajorVersion: server.JavaMajorVersion,
 		ServerJar:        serverJar,
@@ -61,84 +69,71 @@ func formatVanillaDryRunPlan(plan VanillaDryRunPlan) string {
 }
 
 func planVanillaServerJar(targetDir, expectedSHA1 string, force bool) (string, error) {
-	path := targetPath(targetDir, "server.jar")
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "missing", nil
-		}
-		return "", err
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("target path is a directory: %s", path)
-	}
-	if force {
-		return "would redownload due to --force", nil
-	}
-	actual, err := sha1File(path)
+	action, err := classifyManagedFile(targetPath(targetDir, "server.jar"), FileCheck{SHA1: expectedSHA1}, force)
 	if err != nil {
 		return "", err
 	}
-	if strings.EqualFold(actual, expectedSHA1) {
+	switch action {
+	case FileActionMissing:
+		return "missing", nil
+	case FileActionCurrent:
 		return "current", nil
+	default:
+		if force {
+			return "would redownload due to --force", nil
+		}
+		return "would replace", nil
 	}
-	return "would replace", nil
 }
 
 func planVanillaLaunchers(targetDir, javaPath string) (string, error) {
-	sh, err := fileContentStatus(targetPath(targetDir, "run.sh"), vanillaRunSh(javaPath))
+	sh, err := classifyManagedContentFile(targetPath(targetDir, "run.sh"), vanillaRunSh(javaPath), false)
 	if err != nil {
 		return "", err
 	}
-	bat, err := fileContentStatus(targetPath(targetDir, "run.bat"), vanillaRunBat(javaPath))
+	bat, err := classifyManagedContentFile(targetPath(targetDir, "run.bat"), vanillaRunBat(javaPath), false)
 	if err != nil {
 		return "", err
 	}
-	if sh == "current" && bat == "current" {
+	if sh == FileActionCurrent && bat == FileActionCurrent {
 		return "current", nil
 	}
-	if sh == "missing" || bat == "missing" {
+	if sh == FileActionMissing || bat == FileActionMissing {
 		return "would write", nil
 	}
 	return "would update", nil
 }
 
 func planVanillaJVMArgs(targetDir string, force bool) (string, error) {
-	path := targetPath(targetDir, "user_jvm_args.txt")
-	info, err := os.Stat(path)
+	action, err := classifyManagedContentFile(targetPath(targetDir, "user_jvm_args.txt"), jvmArgsContent(), force)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "would write", nil
-		}
 		return "", err
 	}
-	if info.IsDir() {
-		return "", fmt.Errorf("target path is a directory: %s", path)
+	switch action {
+	case FileActionMissing:
+		return "would write", nil
+	case FileActionCurrent:
+		return "current", nil
+	default:
+		if force {
+			return "would update due to --force", nil
+		}
+		return "would update", nil
 	}
-	if force {
-		return "would update due to --force", nil
-	}
-	return "current", nil
 }
 
 func planVanillaState(targetDir string, server VanillaServer) (string, error) {
-	expected := map[string]string{
-		"install-type":          "vanilla\n",
-		"minecraft-version":     server.MinecraftVersion + "\n",
-		"java-major-version":    fmt.Sprintf("%d\n", server.JavaMajorVersion),
-		"server-jar-sha1":       server.ServerSHA1 + "\n",
-		"installer-version.txt": Version + "\n",
-	}
+	expected := vanillaStateFiles(server)
 	anyMissing := false
 	for name, content := range expected {
-		status, err := fileContentStatus(stateFile(targetDir, name), content)
+		action, err := classifyManagedContentFile(stateFile(targetDir, name), content, false)
 		if err != nil {
 			return "", err
 		}
-		switch status {
-		case "missing":
+		switch action {
+		case FileActionMissing:
 			anyMissing = true
-		case "different":
+		case FileActionReplace:
 			return "would update", nil
 		}
 	}
@@ -146,18 +141,4 @@ func planVanillaState(targetDir string, server VanillaServer) (string, error) {
 		return "would write", nil
 	}
 	return "current", nil
-}
-
-func fileContentStatus(path, expected string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "missing", nil
-		}
-		return "", err
-	}
-	if string(data) == expected {
-		return "current", nil
-	}
-	return "different", nil
 }

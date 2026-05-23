@@ -1,7 +1,7 @@
 package serverinstaller
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,11 +25,15 @@ type ModReconcilePlan struct {
 }
 
 func ReconcileMods(targetDir string, mods []ManifestMod, force bool, workerCount int) error {
+	return reconcileMods(context.Background(), defaultDeps, targetDir, mods, force, workerCount)
+}
+
+func reconcileMods(ctx context.Context, deps runtimeDeps, targetDir string, mods []ManifestMod, force bool, workerCount int) error {
 	if workerCount < 1 || workerCount > 16 {
 		return fmt.Errorf("download worker count must be between 1 and 16")
 	}
 
-	plan, err := PlanModReconciliation(targetDir, mods, force)
+	plan, err := planModReconciliation(targetDir, mods, force)
 	if err != nil {
 		return err
 	}
@@ -43,7 +47,7 @@ func ReconcileMods(targetDir string, mods []ManifestMod, force bool, workerCount
 		fmt.Printf("Keeping current mod: %s\n", modLabel(mod))
 	}
 
-	if err := downloadMods(targetDir, plan.ModsToDownload, workerCount); err != nil {
+	if err := downloadMods(ctx, deps, targetDir, plan.ModsToDownload, workerCount); err != nil {
 		return err
 	}
 
@@ -71,6 +75,10 @@ func ReconcileMods(targetDir string, mods []ManifestMod, force bool, workerCount
 }
 
 func PlanModReconciliation(targetDir string, mods []ManifestMod, force bool) (ModReconcilePlan, error) {
+	return planModReconciliation(targetDir, mods, force)
+}
+
+func planModReconciliation(targetDir string, mods []ManifestMod, force bool) (ModReconcilePlan, error) {
 	if len(mods) == 0 {
 		return ModReconcilePlan{}, fmt.Errorf("manifest does not contain any server mod jars")
 	}
@@ -104,36 +112,16 @@ func PlanModReconciliation(targetDir string, mods []ManifestMod, force bool) (Mo
 	for _, mod := range specs {
 		desired[strings.ToLower(mod.FileName)] = mod
 		target := filepath.Join(modsPath, mod.FileName)
-		info, err := os.Stat(target)
-		if err == nil {
-			if info.IsDir() {
-				return ModReconcilePlan{}, fmt.Errorf("target mod path is a directory: %s", target)
-			}
-			if force {
-				downloads = append(downloads, mod)
-				continue
-			}
-			if info.Size() == 0 {
-				downloads = append(downloads, mod)
-				continue
-			}
-			if mod.Size > 0 && info.Size() != mod.Size {
-				downloads = append(downloads, mod)
-				continue
-			}
-			actualSHA1, err := sha1File(target)
-			if err != nil {
-				return ModReconcilePlan{}, err
-			}
-			if strings.EqualFold(actualSHA1, mod.SHA1) {
-				plan.ModsToKeep = append(plan.ModsToKeep, mod)
-				continue
-			}
-		}
-		if err != nil && !os.IsNotExist(err) {
+		action, err := classifyManagedFile(target, FileCheck{SHA1: mod.SHA1, Size: mod.Size}, force)
+		if err != nil {
 			return ModReconcilePlan{}, err
 		}
-		downloads = append(downloads, mod)
+		switch action {
+		case FileActionCurrent:
+			plan.ModsToKeep = append(plan.ModsToKeep, mod)
+		default:
+			downloads = append(downloads, mod)
+		}
 	}
 	plan.ModsToDownload = downloads
 
@@ -163,25 +151,35 @@ func PlanModReconciliation(targetDir string, mods []ManifestMod, force bool) (Mo
 	return plan, nil
 }
 
-func downloadMods(targetDir string, mods []ModSpec, workerCount int) error {
+func downloadMods(ctx context.Context, deps runtimeDeps, targetDir string, mods []ModSpec, workerCount int) error {
 	if len(mods) == 0 {
 		return nil
 	}
 
 	modsPath := modsDir(targetDir)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	jobs := make(chan ModSpec)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var errs []error
+	var firstErr error
 
 	worker := func() {
 		defer wg.Done()
 		for mod := range jobs {
+			if ctx.Err() != nil {
+				return
+			}
 			target := filepath.Join(modsPath, mod.FileName)
-			if err := downloadToFile(mod.URL, target, true, modLabel(mod), DownloadChecks{SHA1: mod.SHA1, Size: mod.Size}); err != nil {
+			if err := downloadToFileCtx(ctx, deps, mod.URL, target, true, modLabel(mod), DownloadChecks{SHA1: mod.SHA1, Size: mod.Size}); err != nil {
 				mu.Lock()
-				errs = append(errs, fmt.Errorf("%s: %w", modLabel(mod), err))
+				if firstErr == nil {
+					firstErr = fmt.Errorf("%s: %w", modLabel(mod), err)
+					cancel()
+				}
 				mu.Unlock()
+				return
 			}
 		}
 	}
@@ -192,13 +190,19 @@ func downloadMods(targetDir string, mods []ModSpec, workerCount int) error {
 	}
 
 	for _, mod := range mods {
-		jobs <- mod
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return firstErr
+		case jobs <- mod:
+		}
 	}
 	close(jobs)
 	wg.Wait()
 
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	if firstErr != nil {
+		return firstErr
 	}
 
 	return nil

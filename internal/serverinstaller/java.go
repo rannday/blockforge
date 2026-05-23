@@ -3,7 +3,6 @@ package serverinstaller
 import (
 	"bytes"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
 )
@@ -11,14 +10,19 @@ import (
 var javaVersionPattern = regexp.MustCompile(`version "([^"]+)"`)
 
 func RequireJava(javaPath string, majorVersion int) error {
+	return requireJavaWithDeps(defaultDeps, javaPath, majorVersion)
+}
+
+func requireJavaWithDeps(deps runtimeDeps, javaPath string, majorVersion int) error {
+	deps = deps.withDefaults()
 	if javaPath == "" {
 		javaPath = "java"
 	}
-	if _, err := exec.LookPath(javaPath); err != nil {
+	if _, err := deps.lookPath(javaPath); err != nil {
 		return fmt.Errorf("%s was not found; Java %d+ is required", javaPath, majorVersion)
 	}
 
-	out, err := exec.Command(javaPath, "-version").CombinedOutput()
+	out, err := deps.command(javaPath, "-version").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s -version failed: %w\n%s", javaPath, err, bytes.TrimSpace(out))
 	}

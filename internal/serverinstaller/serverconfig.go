@@ -2,6 +2,7 @@ package serverinstaller
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,10 @@ var serverConfigZipLimits = zipExtractLimits{
 }
 
 func installServerConfig(targetDir string, manifest Manifest) error {
+	return installServerConfigCtx(context.Background(), defaultDeps, targetDir, manifest)
+}
+
+func installServerConfigCtx(ctx context.Context, deps runtimeDeps, targetDir string, manifest Manifest) error {
 	if manifest.ServerConfig == nil || manifest.ServerConfig.URL == "" {
 		return nil
 	}
@@ -38,7 +43,7 @@ func installServerConfig(targetDir string, manifest Manifest) error {
 	}
 
 	cachePath := filepath.Join(cacheDir(targetDir), "server-config.zip")
-	if err := downloadToFile(manifest.ServerConfig.URL, cachePath, true, "server config", DownloadChecks{SHA1: manifest.ServerConfig.SHA1}); err != nil {
+	if err := downloadToFileCtx(ctx, deps, manifest.ServerConfig.URL, cachePath, true, "server config", DownloadChecks{SHA1: manifest.ServerConfig.SHA1}); err != nil {
 		return err
 	}
 
@@ -97,6 +102,9 @@ func extractZipEntry(entry *zip.File, rootAbs string, totalBytes *int64, limits 
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return fmt.Errorf("zip entry escapes target dir: %s", name)
 	}
+	if !isAllowedServerConfigPath(cleaned) {
+		return fmt.Errorf("zip entry is outside allowed server config paths: %s", name)
+	}
 
 	target := filepath.Join(rootAbs, filepath.FromSlash(cleaned))
 	rel, err := filepath.Rel(rootAbs, target)
@@ -144,6 +152,20 @@ func extractZipEntry(entry *zip.File, rootAbs string, totalBytes *int64, limits 
 	}
 
 	return replaceFile(tmpName, target)
+}
+
+func isAllowedServerConfigPath(cleaned string) bool {
+	cleaned = path.Clean(strings.ReplaceAll(cleaned, "\\", "/"))
+	switch cleaned {
+	case ".", "":
+		return false
+	}
+	for _, root := range []string{"config", "defaultconfigs", "kubejs"} {
+		if cleaned == root || strings.HasPrefix(cleaned, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func copyZipEntryWithLimits(dst io.Writer, src io.Reader, name string, totalBytes *int64, limits zipExtractLimits) error {

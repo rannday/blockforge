@@ -1,13 +1,12 @@
 package serverinstaller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
 
 const vanillaVersionManifestURL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
-
-var fetchVanillaBytes = downloadURLToBytes
 
 type VanillaServer struct {
 	MinecraftVersion string
@@ -39,7 +38,12 @@ type mojangVersionJSON struct {
 }
 
 func FetchLatestVanillaServer() (VanillaServer, error) {
-	raw, err := fetchVanillaBytes(vanillaVersionManifestURL)
+	return fetchLatestVanillaServer(context.Background(), defaultDeps)
+}
+
+func fetchLatestVanillaServer(ctx context.Context, deps runtimeDeps) (VanillaServer, error) {
+	deps = deps.withDefaults()
+	raw, err := downloadURLToBytesCtx(ctx, deps, vanillaVersionManifestURL)
 	if err != nil {
 		return VanillaServer{}, fmt.Errorf("fetch vanilla version manifest: %w", err)
 	}
@@ -68,7 +72,7 @@ func FetchLatestVanillaServer() (VanillaServer, error) {
 		return VanillaServer{}, fmt.Errorf("latest release %q missing version URL", manifest.Latest.Release)
 	}
 
-	raw, err = fetchVanillaBytes(versionURL)
+	raw, err = downloadURLToBytesCtx(ctx, deps, versionURL)
 	if err != nil {
 		return VanillaServer{}, fmt.Errorf("fetch vanilla version %s: %w", manifest.Latest.Release, err)
 	}

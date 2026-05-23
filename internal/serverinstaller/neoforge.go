@@ -1,24 +1,25 @@
 package serverinstaller
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 )
 
-var javaCommand = exec.Command
-var downloadFile = downloadToFile
+func InstallOrUpdateLoader(targetDir string, desired LoaderManifest, javaPath string, force bool) (string, error) {
+	return installOrUpdateLoader(context.Background(), defaultDeps, targetDir, desired, javaPath, force)
+}
 
-func InstallOrUpdateLoader(targetDir string, desired LoaderManifest, force bool) (string, error) {
+func installOrUpdateLoader(ctx context.Context, deps runtimeDeps, targetDir string, desired LoaderManifest, javaPath string, force bool) (string, error) {
 	if err := validateLoaderImplemented(desired); err != nil {
 		return "", err
 	}
 
 	switch desired.Type {
 	case "neoforge":
-		return InstallOrUpdateNeoForge(targetDir, desired, force)
+		return installOrUpdateNeoForge(ctx, deps, targetDir, desired, javaPath, force)
 	default:
 		return "", fmt.Errorf("unsupported manifest loader.type %q", desired.Type)
 	}
@@ -44,7 +45,12 @@ func isRecognizedLoaderType(loaderType string) bool {
 	}
 }
 
-func InstallOrUpdateNeoForge(targetDir string, desired LoaderManifest, force bool) (string, error) {
+func InstallOrUpdateNeoForge(targetDir string, desired LoaderManifest, javaPath string, force bool) (string, error) {
+	return installOrUpdateNeoForge(context.Background(), defaultDeps, targetDir, desired, javaPath, force)
+}
+
+func installOrUpdateNeoForge(ctx context.Context, deps runtimeDeps, targetDir string, desired LoaderManifest, javaPath string, force bool) (string, error) {
+	deps = deps.withDefaults()
 	if desired.Version == "" {
 		return "", fmt.Errorf("manifest loader.version must be non-empty")
 	}
@@ -92,11 +98,11 @@ func InstallOrUpdateNeoForge(targetDir string, desired LoaderManifest, force boo
 	if desired.SHA1 != "" {
 		checks = append(checks, DownloadChecks{SHA1: desired.SHA1})
 	}
-	if err := downloadFile(desired.InstallerURL, installerPath, force, "NeoForge installer", checks...); err != nil {
+	if err := downloadToFileCtx(ctx, deps, desired.InstallerURL, installerPath, force, "NeoForge installer", checks...); err != nil {
 		return "", err
 	}
 
-	cmd := javaCommand("java", "-jar", installerPath, "--installServer")
+	cmd := deps.command(javaCommandName(javaPath), "-jar", installerPath, "--installServer")
 	cmd.Dir = targetDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {

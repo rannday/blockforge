@@ -1,10 +1,13 @@
 package serverinstaller
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,12 +47,10 @@ func TestParseOptionsRejectsVanillaConflicts(t *testing.T) {
 	}{
 		{"manifest long", []string{"--vanilla", "--manifest", "https://example.invalid/manifest.json"}, "--manifest"},
 		{"manifest short", []string{"--vanilla", "-m", "https://example.invalid/manifest.json"}, "--manifest"},
-		{"manifest url", []string{"--vanilla", "--manifest-url", "https://example.invalid/manifest.json"}, "--manifest"},
 		{"check manifest long", []string{"--vanilla", "--check-manifest"}, "--check-manifest"},
 		{"check manifest short", []string{"--vanilla", "-c"}, "--check-manifest"},
 		{"workers", []string{"--vanilla", "--workers", "2"}, "--workers"},
 		{"workers short", []string{"--vanilla", "-w", "2"}, "--workers"},
-		{"download workers", []string{"--vanilla", "--download-workers", "2"}, "--workers"},
 	}
 
 	for _, tc := range tests {
@@ -73,7 +74,7 @@ func TestParseOptionsSupportsJavaWithoutVanilla(t *testing.T) {
 }
 
 func TestFetchLatestVanillaServerUsesLatestRelease(t *testing.T) {
-	restore := stubVanillaFetch(t, map[string]string{
+	deps := vanillaFetchDeps(t, map[string]string{
 		vanillaVersionManifestURL: `{
 			"latest": {"release": "1.21.8", "snapshot": "25w01a"},
 			"versions": [
@@ -83,9 +84,8 @@ func TestFetchLatestVanillaServerUsesLatestRelease(t *testing.T) {
 		}`,
 		"https://example.invalid/release.json": vanillaVersionJSON("https://example.invalid/server.jar", strings.Repeat("a", 40), 6),
 	})
-	defer restore()
 
-	server, err := FetchLatestVanillaServer()
+	server, err := fetchLatestVanillaServer(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("FetchLatestVanillaServer() error = %v", err)
 	}
@@ -115,16 +115,15 @@ func TestFetchLatestVanillaServerErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			restore := stubVanillaFetch(t, map[string]string{
+			deps := vanillaFetchDeps(t, map[string]string{
 				vanillaVersionManifestURL: `{
 					"latest": {"release": "1.21.8"},
 					"versions": [{"id": "1.21.8", "url": "https://example.invalid/release.json"}]
 				}`,
 				"https://example.invalid/release.json": tc.version,
 			})
-			defer restore()
 
-			_, err := FetchLatestVanillaServer()
+			_, err := fetchLatestVanillaServer(context.Background(), deps)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("FetchLatestVanillaServer() error = %v, want %q", err, tc.want)
 			}
@@ -146,10 +145,9 @@ func TestFetchLatestVanillaServerMetadataErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			restore := stubVanillaFetch(t, map[string]string{vanillaVersionManifestURL: tc.manifest})
-			defer restore()
+			deps := vanillaFetchDeps(t, map[string]string{vanillaVersionManifestURL: tc.manifest})
 
-			_, err := FetchLatestVanillaServer()
+			_, err := fetchLatestVanillaServer(context.Background(), deps)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("FetchLatestVanillaServer() error = %v, want %q", err, tc.want)
 			}
@@ -163,10 +161,9 @@ func TestRunVanillaKeepsMatchingServerJar(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restore := stubRunVanilla(t, server)
-	defer restore()
+	deps := vanillaRunDeps(t, server)
 
-	if err := RunVanilla(Options{TargetDir: root}); err != nil {
+	if err := runVanilla(context.Background(), deps, Options{TargetDir: root}); err != nil {
 		t.Fatalf("RunVanilla() error = %v", err)
 	}
 	if got := readTestFile(t, filepath.Join(root, "server.jar")); got != "server" {
@@ -180,10 +177,9 @@ func TestRunVanillaReplacesMismatchedServerJar(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restore := stubRunVanilla(t, server)
-	defer restore()
+	deps := vanillaRunDeps(t, server)
 
-	if err := RunVanilla(Options{TargetDir: root}); err != nil {
+	if err := runVanilla(context.Background(), deps, Options{TargetDir: root}); err != nil {
 		t.Fatalf("RunVanilla() error = %v", err)
 	}
 	if got := readTestFile(t, filepath.Join(root, "server.jar")); got != "new server" {
@@ -197,10 +193,9 @@ func TestRunVanillaForceRedownloadsMatchingServerJar(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restore := stubRunVanilla(t, server)
-	defer restore()
+	deps := vanillaRunDeps(t, server)
 
-	if err := RunVanilla(Options{TargetDir: root, Force: true}); err != nil {
+	if err := runVanilla(context.Background(), deps, Options{TargetDir: root, Force: true}); err != nil {
 		t.Fatalf("RunVanilla() error = %v", err)
 	}
 	if got := readTestFile(t, filepath.Join(root, "server.jar")); got != "server" {
@@ -210,10 +205,9 @@ func TestRunVanillaForceRedownloadsMatchingServerJar(t *testing.T) {
 
 func TestRunVanillaWritesLaunchersJVMArgsAndState(t *testing.T) {
 	root, server := vanillaFixture(t, "server")
-	restore := stubRunVanilla(t, server)
-	defer restore()
+	deps := vanillaRunDeps(t, server)
 
-	if err := RunVanilla(Options{TargetDir: root}); err != nil {
+	if err := runVanilla(context.Background(), deps, Options{TargetDir: root}); err != nil {
 		t.Fatalf("RunVanilla() error = %v", err)
 	}
 
@@ -243,31 +237,46 @@ func TestRunVanillaWritesLaunchersJVMArgsAndState(t *testing.T) {
 	}
 }
 
+func TestVanillaStateFilesMatchWrite(t *testing.T) {
+	root, server := vanillaFixture(t, "server")
+
+	if err := WriteVanillaState(root, server); err != nil {
+		t.Fatalf("WriteVanillaState() error = %v", err)
+	}
+
+	for name, want := range vanillaStateFiles(server) {
+		if got := readTestFile(t, stateFile(root, name)); got != want {
+			t.Fatalf("state file %s = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestRunVanillaUsesManifestJavaVersionAndCustomJavaPath(t *testing.T) {
 	root, server := vanillaFixture(t, "server")
 	server.JavaMajorVersion = 25
-	restore := stubRunVanilla(t, server)
-	defer restore()
 
 	var gotJavaPath string
-	var gotJavaMajor int
-	oldRequire := requireJava
-	requireJava = func(javaPath string, majorVersion int) error {
-		gotJavaPath = javaPath
-		gotJavaMajor = majorVersion
-		return nil
-	}
-	defer func() { requireJava = oldRequire }()
-
 	javaPath := "C:\\Program Files\\Java\\jdk-25\\bin\\java.exe"
-	if err := RunVanilla(Options{TargetDir: root, JavaPath: javaPath}); err != nil {
+	deps := vanillaRunDeps(t, server)
+	deps.lookPath = func(javaPath string) (string, error) {
+		gotJavaPath = javaPath
+		return javaPath, nil
+	}
+	deps.command = func(name string, args ...string) *exec.Cmd {
+		if name != javaPath {
+			t.Fatalf("command name = %q, want %q", name, javaPath)
+		}
+		if len(args) != 1 || args[0] != "-version" {
+			t.Fatalf("command args = %v, want -version", args)
+		}
+		return helperJavaCommand(t, `openjdk version "25.0.1"`)
+	}
+
+	if err := runVanilla(context.Background(), deps, Options{TargetDir: root, JavaPath: javaPath}); err != nil {
 		t.Fatalf("RunVanilla() error = %v", err)
 	}
 	if gotJavaPath != javaPath {
 		t.Fatalf("RequireJava path = %q, want %q", gotJavaPath, javaPath)
-	}
-	if gotJavaMajor != 25 {
-		t.Fatalf("RequireJava major = %d, want 25", gotJavaMajor)
 	}
 	if got := readTestFile(t, filepath.Join(root, "run.sh")); got != vanillaRunSh(javaPath) {
 		t.Fatalf("run.sh = %q, want custom Java launcher", got)
@@ -279,10 +288,9 @@ func TestRunVanillaUsesManifestJavaVersionAndCustomJavaPath(t *testing.T) {
 
 func TestRunVanillaDryRunWritesNoFiles(t *testing.T) {
 	root, server := vanillaFixture(t, "server")
-	restore := stubRunVanilla(t, server)
-	defer restore()
+	deps := vanillaRunDeps(t, server)
 
-	if err := RunVanilla(Options{TargetDir: root, DryRun: true}); err != nil {
+	if err := runVanilla(context.Background(), deps, Options{TargetDir: root, DryRun: true}); err != nil {
 		t.Fatalf("RunVanilla() error = %v", err)
 	}
 	if entries, err := os.ReadDir(root); err != nil {
@@ -301,7 +309,7 @@ func TestRunVanillaRejectsManifestManagedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := RunVanilla(Options{TargetDir: root, DryRun: true})
+	err := runVanilla(context.Background(), defaultDeps, Options{TargetDir: root, DryRun: true})
 	if err == nil || !strings.Contains(err.Error(), "manifest-managed") {
 		t.Fatalf("RunVanilla() error = %v, want manifest-managed rejection", err)
 	}
@@ -316,7 +324,7 @@ func TestRunVanillaRejectsNonVanillaInstallType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := RunVanilla(Options{TargetDir: root, DryRun: true})
+	err := runVanilla(context.Background(), defaultDeps, Options{TargetDir: root, DryRun: true})
 	if err == nil || !strings.Contains(err.Error(), "install-type") {
 		t.Fatalf("RunVanilla() error = %v, want install-type rejection", err)
 	}
@@ -330,48 +338,10 @@ func TestRunVanillaAllowsExistingVanillaInstallType(t *testing.T) {
 	if err := os.WriteFile(vanillaInstallTypePath(root), []byte("vanilla\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	restore := stubRunVanilla(t, server)
-	defer restore()
+	deps := vanillaRunDeps(t, server)
 
-	if err := RunVanilla(Options{TargetDir: root, DryRun: true}); err != nil {
+	if err := runVanilla(context.Background(), deps, Options{TargetDir: root, DryRun: true}); err != nil {
 		t.Fatalf("RunVanilla() error = %v", err)
-	}
-}
-
-func stubVanillaFetch(t *testing.T, responses map[string]string) func() {
-	t.Helper()
-	old := fetchVanillaBytes
-	fetchVanillaBytes = func(rawURL string) ([]byte, error) {
-		response, ok := responses[rawURL]
-		if !ok {
-			return nil, fmt.Errorf("unexpected URL %s", rawURL)
-		}
-		return []byte(response), nil
-	}
-	return func() { fetchVanillaBytes = old }
-}
-
-func stubRunVanilla(t *testing.T, server VanillaServer) func() {
-	t.Helper()
-	oldFetch := fetchVanillaBytes
-	oldRequire := requireJava
-	fetchVanillaBytes = func(rawURL string) ([]byte, error) {
-		switch rawURL {
-		case vanillaVersionManifestURL:
-			return []byte(fmt.Sprintf(`{
-				"latest": {"release": %q},
-				"versions": [{"id": %q, "url": "https://example.invalid/release.json"}]
-			}`, server.MinecraftVersion, server.MinecraftVersion)), nil
-		case "https://example.invalid/release.json":
-			return []byte(vanillaVersionJSONWithJava(server.ServerURL, server.ServerSHA1, server.ServerSize, server.JavaMajorVersion)), nil
-		default:
-			return nil, fmt.Errorf("unexpected URL %s", rawURL)
-		}
-	}
-	requireJava = func(string, int) error { return nil }
-	return func() {
-		fetchVanillaBytes = oldFetch
-		requireJava = oldRequire
 	}
 }
 
@@ -419,4 +389,40 @@ func readTestFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func vanillaFetchDeps(t *testing.T, responses map[string]string) runtimeDeps {
+	t.Helper()
+
+	return runtimeDeps{
+		httpClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			body, ok := responses[req.URL.String()]
+			if !ok {
+				t.Fatalf("unexpected URL %s", req.URL.String())
+			}
+			return httpResponse(t, []byte(body)), nil
+		})},
+	}
+}
+
+func vanillaRunDeps(t *testing.T, server VanillaServer) runtimeDeps {
+	t.Helper()
+
+	deps := vanillaFetchDeps(t, map[string]string{
+		vanillaVersionManifestURL: `{
+			"latest": {"release": "1.21.8"},
+			"versions": [{"id": "1.21.8", "url": "https://example.invalid/release.json"}]
+		}`,
+		"https://example.invalid/release.json": vanillaVersionJSONWithJava(server.ServerURL, server.ServerSHA1, server.ServerSize, server.JavaMajorVersion),
+	})
+	deps.lookPath = func(javaPath string) (string, error) {
+		return javaPath, nil
+	}
+	deps.command = func(name string, args ...string) *exec.Cmd {
+		if len(args) != 1 || args[0] != "-version" {
+			t.Fatalf("command args = %v, want -version", args)
+		}
+		return helperJavaCommand(t, `openjdk version "25.0.1"`)
+	}
+	return deps
 }

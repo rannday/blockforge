@@ -61,7 +61,7 @@ blockforge --vanilla --dir /opt/minecraft/vanilla --dry-run
 blockforge --vanilla --dir /opt/minecraft/vanilla --force
 ```
 
-`--vanilla` cannot be combined with `-m`, `--manifest`, `--manifest-url`, `-c`, or `--check-manifest`. It writes vanilla state under `.blockforge` and does not write `.blockforge/manifest-url`.
+`--vanilla` cannot be combined with `-m`, `--manifest`, `-c`, `--check-manifest`, `-w`, or `--workers`. It writes vanilla state under `.blockforge` and does not write `.blockforge/manifest-url`.
 
 Flags:
 

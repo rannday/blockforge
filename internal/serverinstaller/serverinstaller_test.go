@@ -3,10 +3,13 @@ package serverinstaller
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseJavaVersion(t *testing.T) {
@@ -30,8 +34,13 @@ func TestParseJavaVersion(t *testing.T) {
 	}{
 		{
 			name:   "modern",
-			output: `openjdk version "21.0.4" 2024-07-16`,
+			output: `openjdk version "21.0.2" 2024-01-16`,
 			want:   21,
+		},
+		{
+			name:   "seventeen",
+			output: `openjdk version "17.0.10" 2024-01-16`,
+			want:   17,
 		},
 		{
 			name:   "legacy",
@@ -541,7 +550,7 @@ func TestResolveManifestSourceRequiresSourceOnFirstInstall(t *testing.T) {
 	t.Parallel()
 
 	root := filepath.Join(t.TempDir(), "missing")
-	if _, err := resolveManifestSource(root, ""); err == nil || !strings.Contains(err.Error(), "manifest URL required on first install") {
+	if _, err := resolveManifestSource(root, ""); err == nil || !strings.Contains(err.Error(), "manifest source required on first install; pass --manifest SOURCE") {
 		t.Fatalf("resolveManifestSource() error = %v, want first-install error", err)
 	}
 }
@@ -818,7 +827,7 @@ func TestDryRunReportsDesiredModDirectoryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := PlanDryRun(root, "file:///manifest.json", manifest, false)
-	if err == nil || !strings.Contains(err.Error(), "target mod path is a directory") {
+	if err == nil || !strings.Contains(err.Error(), "target path is a directory") {
 		t.Fatalf("PlanDryRun() error = %v, want directory error", err)
 	}
 }
@@ -919,22 +928,28 @@ func TestManifestJSONTagsKeepRequiredFields(t *testing.T) {
 func TestRequireManifestJavaUsesRequestedMajor(t *testing.T) {
 	t.Parallel()
 
-	oldRequireJava := requireJava
-	defer func() { requireJava = oldRequireJava }()
-
 	var gotJavaPath string
-	var gotMajor int
-	requireJava = func(javaPath string, majorVersion int) error {
-		gotJavaPath = javaPath
-		gotMajor = majorVersion
-		return nil
+	deps := runtimeDeps{
+		lookPath: func(javaPath string) (string, error) {
+			gotJavaPath = javaPath
+			return javaPath, nil
+		},
+		command: func(name string, args ...string) *exec.Cmd {
+			if name != "custom-java" {
+				t.Fatalf("command name = %q, want custom-java", name)
+			}
+			if len(args) != 1 || args[0] != "-version" {
+				t.Fatalf("command args = %v, want -version", args)
+			}
+			return helperJavaCommand(t, `openjdk version "21.0.2"`)
+		},
 	}
 
-	if err := requireManifestJava("custom-java", 17); err != nil {
+	if err := requireJavaWithDeps(deps, "custom-java", 17); err != nil {
 		t.Fatalf("requireManifestJava() error = %v", err)
 	}
-	if gotJavaPath != "custom-java" || gotMajor != 17 {
-		t.Fatalf("requireManifestJava() = %q, %d; want custom-java, 17", gotJavaPath, gotMajor)
+	if gotJavaPath != "custom-java" {
+		t.Fatalf("requireJavaWithDeps() path = %q, want custom-java", gotJavaPath)
 	}
 }
 
@@ -974,18 +989,16 @@ func TestParseOptionsSupportsAliases(t *testing.T) {
 	}
 }
 
-func TestParseOptionsSupportsDeprecatedAliases(t *testing.T) {
+func TestParseOptionsRejectsDeprecatedAliases(t *testing.T) {
 	t.Parallel()
 
-	opts, err := parseOptions([]string{"--manifest-url", "https://example.invalid/manifest.json", "--download-workers", "4"})
-	if err != nil {
-		t.Fatalf("parseOptions() error = %v", err)
-	}
-	if opts.ManifestSource != "https://example.invalid/manifest.json" {
-		t.Fatalf("parseOptions() ManifestSource = %q, want deprecated manifest alias", opts.ManifestSource)
-	}
-	if opts.DownloadWorkers != 4 {
-		t.Fatalf("parseOptions() DownloadWorkers = %d, want 4", opts.DownloadWorkers)
+	for _, args := range [][]string{
+		{"--manifest-url", "https://example.invalid/manifest.json"},
+		{"--download-workers", "4"},
+	} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatalf("parseOptions(%v) accepted deprecated alias", args)
+		}
 	}
 }
 
@@ -1042,7 +1055,7 @@ func TestInstallerUsageText(t *testing.T) {
 	var buf bytes.Buffer
 	printInstallerUsage(&buf)
 	got := buf.String()
-	want := "Usage: blockforge [options]\n\nInstall or update a Minecraft server.\n\nOptions:\n  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)\n  -d, --dir DIR              Server install directory (default: .)\n  -c, --check-manifest       Validate manifest and print a summary without changing files\n      --vanilla              Install/update latest recommended vanilla release\n      --dry-run              Show planned changes without modifying files\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)\n  -j, --java PATH            Java executable path for vanilla and manifest installs (default: java)\n  -v, --version              Print installer version and exit\n  -h, --help                 Show this help text and exit\n\nFirst install requires --manifest. Later runs reuse the saved source from .blockforge/manifest-url.\n"
+	want := "Usage: blockforge [options]\n\nInstall or update a Minecraft server.\n\nOptions:\n  -m, --manifest SOURCE      Manifest source URL or local path (required on first install)\n  -d, --dir DIR              Server install directory (default: .)\n  -c, --check-manifest       Validate manifest and print a summary without changing files\n      --vanilla              Install/update latest recommended vanilla release\n      --dry-run              Show planned changes without modifying files\n  -f, --force                Re-download/reinstall files instead of keeping existing files\n  -w, --workers N            Concurrent mod download workers (default: 6, range: 1-16)\n  -j, --java PATH            Java executable path for vanilla and manifest installs (default: java)\n  -v, --version              Print installer version and exit\n  -h, --help                 Show this help text and exit\n\nFirst install requires --manifest SOURCE. Later runs reuse the saved source from .blockforge/manifest-url.\n"
 	if got != want {
 		t.Fatalf("usage text mismatch:\n--- got ---\n%s--- want ---\n%s", got, want)
 	}
@@ -1104,7 +1117,7 @@ func TestExtractZipFileRejectsTooManyFiles(t *testing.T) {
 func TestExtractZipFileRejectsSingleFileLimit(t *testing.T) {
 	root := t.TempDir()
 	zipPath := filepath.Join(root, "large-file.zip")
-	if err := writeTestZip(zipPath, map[string]string{"large.txt": "123456"}); err != nil {
+	if err := writeTestZip(zipPath, map[string]string{"config/large.txt": "123456"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1118,7 +1131,7 @@ func TestExtractZipFileRejectsSingleFileLimit(t *testing.T) {
 func TestExtractZipFileRejectsTotalBytesLimit(t *testing.T) {
 	root := t.TempDir()
 	zipPath := filepath.Join(root, "total.zip")
-	if err := writeTestZip(zipPath, map[string]string{"a.txt": "1234", "b.txt": "5678"}); err != nil {
+	if err := writeTestZip(zipPath, map[string]string{"config/a.txt": "1234", "config/b.txt": "5678"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1126,6 +1139,198 @@ func TestExtractZipFileRejectsTotalBytesLimit(t *testing.T) {
 
 	if err := extractZipFile(zipPath, root); err == nil || !strings.Contains(strings.ToLower(err.Error()), "total extracted limit") {
 		t.Fatalf("extractZipFile() error = %v, want total limit", err)
+	}
+}
+
+func TestExtractZipFileAllowsServerConfigRoots(t *testing.T) {
+	root := t.TempDir()
+	zipPath := filepath.Join(root, "allowed.zip")
+	if err := writeTestZip(zipPath, map[string]string{
+		"config/example.toml":                       "a=1\n",
+		"defaultconfigs/example.toml":               "b=2\n",
+		"kubejs/server_scripts/example.js":          "console.log('ok')\n",
+		"kubejs/data/example/advancement/root.json": "{}\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := extractZipFile(zipPath, root); err != nil {
+		t.Fatalf("extractZipFile() error = %v, want allowlisted paths", err)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "config", "example.toml"),
+		filepath.Join(root, "defaultconfigs", "example.toml"),
+		filepath.Join(root, "kubejs", "server_scripts", "example.js"),
+		filepath.Join(root, "kubejs", "data", "example", "advancement", "root.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s missing after extract: %v", path, err)
+		}
+	}
+}
+
+func TestExtractZipFileRejectsForbiddenServerConfigPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+	}{
+		{name: "blockforge", path: ".blockforge/manifest-url"},
+		{name: "mods", path: "mods/example.jar"},
+		{name: "libraries", path: "libraries/x"},
+		{name: "server jar", path: "server.jar"},
+		{name: "run sh", path: "run.sh"},
+		{name: "run bat", path: "run.bat"},
+		{name: "jvm args", path: "user_jvm_args.txt"},
+		{name: "server properties", path: "server.properties"},
+		{name: "world", path: "world/level.dat"},
+		{name: "traversal", path: "../escape"},
+		{name: "absolute", path: "/abs/path.txt"},
+		{name: "backslash", path: "config\\bad.toml"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			zipPath := filepath.Join(root, tc.name+".zip")
+			if err := writeTestZip(zipPath, map[string]string{tc.path: "bad"}); err != nil {
+				t.Fatal(err)
+			}
+
+			err := extractZipFile(zipPath, root)
+			if err == nil {
+				t.Fatalf("extractZipFile() succeeded for %q", tc.path)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "zip entry") && !strings.Contains(strings.ToLower(err.Error()), "escapes") {
+				t.Fatalf("extractZipFile() error = %v, want path rejection", err)
+			}
+		})
+	}
+}
+
+func TestExtractZipFileRejectsSymlinkEntry(t *testing.T) {
+	root := t.TempDir()
+	zipPath := filepath.Join(root, "symlink.zip")
+	file, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(file)
+	header := &zip.FileHeader{Name: "config/link"}
+	header.SetMode(os.ModeSymlink | 0o777)
+	writer, err := zw.CreateHeader(header)
+	if err != nil {
+		_ = zw.Close()
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("target")); err != nil {
+		_ = zw.Close()
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := extractZipFile(zipPath, root); err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") {
+		t.Fatalf("extractZipFile() error = %v, want symlink rejection", err)
+	}
+}
+
+func TestIsSafeModFilename(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"simple", "mod.jar", true},
+		{"double dots", "mod..name.jar", true},
+		{"upper", "MOD.JAR", true},
+		{"empty", "", false},
+		{"dot", ".", false},
+		{"dotdot", "..", false},
+		{"traversal", "../mod.jar", false},
+		{"slash", "dir/mod.jar", false},
+		{"backslash", "dir\\mod.jar", false},
+		{"absolute", "/abs/mod.jar", false},
+		{"non jar", "mod.zip", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isSafeModFilename(tc.path); got != tc.want {
+				t.Fatalf("isSafeModFilename(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyManagedFile(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "current.jar")
+	empty := filepath.Join(root, "empty.jar")
+	sizeMismatch := filepath.Join(root, "size.jar")
+	shaMismatch := filepath.Join(root, "sha.jar")
+	dirPath := filepath.Join(root, "dir")
+
+	if err := os.WriteFile(current, []byte("current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sizeMismatch, []byte("1234"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shaMismatch, []byte("sha-old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	currentSHA := sha1HexOfFile(t, current)
+
+	cases := []struct {
+		name    string
+		path    string
+		check   FileCheck
+		force   bool
+		want    FileAction
+		wantErr bool
+	}{
+		{"missing", filepath.Join(root, "missing.jar"), FileCheck{}, false, FileActionMissing, false},
+		{"empty", empty, FileCheck{}, false, FileActionReplace, false},
+		{"current", current, FileCheck{SHA1: currentSHA, Size: int64(len("current"))}, false, FileActionCurrent, false},
+		{"size mismatch", sizeMismatch, FileCheck{Size: 99}, false, FileActionReplace, false},
+		{"sha mismatch", shaMismatch, FileCheck{SHA1: strings.Repeat("0", 40)}, false, FileActionReplace, false},
+		{"force", current, FileCheck{SHA1: currentSHA}, true, FileActionReplace, false},
+		{"dir", dirPath, FileCheck{}, false, "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := classifyManagedFile(tc.path, tc.check, tc.force)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("classifyManagedFile() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("classifyManagedFile() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("classifyManagedFile() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1237,6 +1442,48 @@ func TestReconcileModsRejectsDuplicateFilenamesBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestReconcileModsCancelsRemainingDownloadsAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	canceled := make(chan struct{}, 1)
+	slowStarted := make(chan struct{})
+	deps := runtimeDeps{
+		httpClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/bad.jar":
+				<-slowStarted
+				return httpStatusResponse(t, http.StatusNotFound, "missing"), nil
+			case "/slow.jar":
+				close(slowStarted)
+				<-req.Context().Done()
+				select {
+				case canceled <- struct{}{}:
+				default:
+				}
+				return nil, req.Context().Err()
+			default:
+				t.Fatalf("unexpected request path %q", req.URL.Path)
+				return nil, nil
+			}
+		})},
+	}
+
+	err := reconcileMods(context.Background(), deps, root, []ManifestMod{
+		{Name: "Bad Mod", URL: "https://example.invalid/bad.jar", WebsiteURL: "https://example.invalid", SHA1: strings.Repeat("1", 40), Size: 1},
+		{Name: "Slow Mod", URL: "https://example.invalid/slow.jar", WebsiteURL: "https://example.invalid", SHA1: strings.Repeat("2", 40), Size: 1},
+	}, false, 2)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "bad mod") {
+		t.Fatalf("reconcileMods() error = %v, want bad mod failure", err)
+	}
+
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow download was not canceled after first failure")
+	}
+}
+
 func TestInstallOrUpdateNeoForgeUsesDesiredManifest(t *testing.T) {
 	root := t.TempDir()
 	desiredVersion := "21.1.228"
@@ -1253,31 +1500,34 @@ func TestInstallOrUpdateNeoForgeUsesDesiredManifest(t *testing.T) {
 		SHA1:         installerSHA1,
 	}
 
-	oldJavaCommand := javaCommand
-	oldDownloadFile := downloadFile
-	javaCommand = func(name string, args ...string) *exec.Cmd {
-		cmd := exec.Command(os.Args[0], "-test.run=TestHelperJavaInstallerProcess", "--", filepath.Join(root, "libraries", "net", "neoforged", "neoforge", desiredVersion))
-		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
-		return cmd
+	deps := runtimeDeps{
+		httpClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != desired.InstallerURL {
+				t.Fatalf("unexpected URL %s", req.URL.String())
+			}
+			return httpResponse(t, installerPayload), nil
+		})},
+		lookPath: func(string) (string, error) { return "custom-java", nil },
+		command: func(name string, args ...string) *exec.Cmd {
+			if name != "custom-java" {
+				t.Fatalf("java command name = %q, want custom-java", name)
+			}
+			switch {
+			case len(args) == 1 && args[0] == "-version":
+				return helperJavaCommand(t, `openjdk version "21.0.2"`)
+			case len(args) == 3 && args[0] == "-jar" && args[2] == "--installServer":
+				return helperNeoForgeInstallerCommand(t, desiredVersion)
+			default:
+				t.Fatalf("java command args = %v, want -version or -jar ... --installServer", args)
+			}
+			return nil
+		},
+		stat:   os.Stat,
+		rename: os.Rename,
+		remove: os.Remove,
 	}
-	downloadFile = func(rawURL, targetPath string, force bool, label string, checks ...DownloadChecks) error {
-		if strings.Contains(rawURL, ".sha1") {
-			t.Fatalf("downloadFile() unexpectedly fetched sha1 URL: %s", rawURL)
-		}
-		if rawURL != desired.InstallerURL {
-			t.Fatalf("downloadFile() rawURL = %q, want %q", rawURL, desired.InstallerURL)
-		}
-		if len(checks) != 1 || checks[0].SHA1 != installerSHA1 {
-			t.Fatalf("downloadFile() checks = %#v, want one sha1 check", checks)
-		}
-		return downloadToFile(fileURL(sourceInstaller), targetPath, force, label, checks...)
-	}
-	defer func() {
-		javaCommand = oldJavaCommand
-		downloadFile = oldDownloadFile
-	}()
 
-	got, err := InstallOrUpdateNeoForge(root, desired, false)
+	got, err := installOrUpdateNeoForge(context.Background(), deps, root, desired, "custom-java", false)
 	if err != nil {
 		t.Fatalf("InstallOrUpdateNeoForge() error = %v", err)
 	}
@@ -1294,7 +1544,7 @@ func TestInstallOrUpdateLoaderRejectsRecognizedUnimplementedLoaders(t *testing.T
 		t.Run(loaderType, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := InstallOrUpdateLoader(t.TempDir(), LoaderManifest{Type: loaderType, Version: "1.0.0"}, false)
+			_, err := InstallOrUpdateLoader(t.TempDir(), LoaderManifest{Type: loaderType, Version: "1.0.0"}, "java", false)
 			if err == nil || !strings.Contains(err.Error(), "recognized by the manifest schema but is not implemented") {
 				t.Fatalf("InstallOrUpdateLoader() error = %v, want not implemented", err)
 			}
@@ -1603,16 +1853,18 @@ func TestReplaceFileRestoresTargetWhenFinalRenameFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldRename := renameFile
-	renameFile = func(oldpath, newpath string) error {
-		if oldpath == temp && newpath == target {
-			return os.ErrPermission
-		}
-		return oldRename(oldpath, newpath)
+	deps := runtimeDeps{
+		stat: func(string) (os.FileInfo, error) { return nil, nil },
+		rename: func(oldpath, newpath string) error {
+			if oldpath == temp && newpath == target {
+				return os.ErrPermission
+			}
+			return os.Rename(oldpath, newpath)
+		},
+		remove: func(string) error { return nil },
 	}
-	defer func() { renameFile = oldRename }()
 
-	if err := replaceFile(temp, target); !os.IsPermission(err) {
+	if err := replaceFileWithDeps(deps, temp, target); !os.IsPermission(err) {
 		t.Fatalf("replaceFile() error = %v, want permission error", err)
 	}
 	data, err := os.ReadFile(target)
@@ -1661,18 +1913,82 @@ func TestReplaceFilePropagatesStatErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldStat := statFile
-	statFile = func(string) (os.FileInfo, error) {
-		return nil, os.ErrPermission
+	deps := runtimeDeps{
+		stat: func(string) (os.FileInfo, error) {
+			return nil, os.ErrPermission
+		},
+		rename: os.Rename,
+		remove: os.Remove,
 	}
-	defer func() { statFile = oldStat }()
 
-	if err := replaceFile(temp, target); !os.IsPermission(err) {
+	if err := replaceFileWithDeps(deps, temp, target); !os.IsPermission(err) {
 		t.Fatalf("replaceFile() error = %v, want permission error", err)
 	}
 
 	if _, err := os.Stat(temp); err != nil {
 		t.Fatalf("temp file should remain after stat failure cleanup path: %v", err)
+	}
+}
+
+func TestDownloadURLToBytesRetriesRetryableFailures(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	deps := runtimeDeps{
+		httpClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return httpStatusResponse(t, http.StatusInternalServerError, "boom"), nil
+			}
+			return httpResponse(t, []byte("ok")), nil
+		})},
+	}
+
+	got, err := downloadURLToBytesCtx(context.Background(), deps, "https://example.invalid/file.json")
+	if err != nil {
+		t.Fatalf("downloadURLToBytesCtx() error = %v", err)
+	}
+	if string(got) != "ok" {
+		t.Fatalf("downloadURLToBytesCtx() = %q, want ok", got)
+	}
+	if calls != 2 {
+		t.Fatalf("download attempts = %d, want 2", calls)
+	}
+}
+
+func TestIsRetryableDownloadError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"server error", &downloadStatusError{StatusCode: http.StatusInternalServerError}, true},
+		{"client error", &downloadStatusError{StatusCode: http.StatusNotFound}, false},
+		{"network error", &net.DNSError{}, true},
+		{"checksum mismatch", fmt.Errorf("checksum mismatch"), false},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isRetryableDownloadError(tc.err); got != tc.want {
+				t.Fatalf("isRetryableDownloadError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func httpStatusResponse(t *testing.T, status int, body string) *http.Response {
+	t.Helper()
+
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
 	}
 }
 
@@ -1793,7 +2109,7 @@ func writeManyFileTestZip(path string, count int) error {
 
 	zw := zip.NewWriter(file)
 	for i := 0; i < count; i++ {
-		writer, err := zw.Create("file-" + strconv.Itoa(i) + ".txt")
+		writer, err := zw.Create("config/file-" + strconv.Itoa(i) + ".txt")
 		if err != nil {
 			zw.Close()
 			return err
@@ -1883,7 +2199,40 @@ func countLaunchNogui(lines []string) int {
 	return count
 }
 
-func TestHelperJavaInstallerProcess(t *testing.T) {
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func httpResponse(t *testing.T, body []byte) *http.Response {
+	t.Helper()
+
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+}
+
+func helperJavaCommand(t *testing.T, output string) *exec.Cmd {
+	t.Helper()
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperCommandProcess", "--", "java-version", output)
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	return cmd
+}
+
+func helperNeoForgeInstallerCommand(t *testing.T, version string) *exec.Cmd {
+	t.Helper()
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperCommandProcess", "--", "neoforge-installer", version)
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	return cmd
+}
+
+func TestHelperCommandProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
 	}
@@ -1893,13 +2242,31 @@ func TestHelperJavaInstallerProcess(t *testing.T) {
 		if arg != "--" || i+1 >= len(args) {
 			continue
 		}
-		if err := os.MkdirAll(args[i+1], 0o755); err != nil {
-			_, _ = os.Stderr.WriteString(err.Error())
+		switch args[i+1] {
+		case "java-version":
+			if i+2 >= len(args) {
+				_, _ = os.Stderr.WriteString("missing helper java output")
+				os.Exit(1)
+			}
+			_, _ = os.Stderr.WriteString(args[i+2])
+			os.Exit(0)
+		case "neoforge-installer":
+			if i+2 >= len(args) {
+				_, _ = os.Stderr.WriteString("missing helper version")
+				os.Exit(1)
+			}
+			versionDir := filepath.Join("libraries", "net", "neoforged", "neoforge", args[i+2])
+			if err := os.MkdirAll(versionDir, 0o755); err != nil {
+				_, _ = os.Stderr.WriteString(err.Error())
+				os.Exit(1)
+			}
+			os.Exit(0)
+		default:
+			_, _ = os.Stderr.WriteString("unknown helper mode")
 			os.Exit(1)
 		}
-		os.Exit(0)
 	}
 
-	_, _ = os.Stderr.WriteString("missing helper target dir")
+	_, _ = os.Stderr.WriteString("missing helper mode")
 	os.Exit(1)
 }

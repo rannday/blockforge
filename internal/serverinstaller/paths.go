@@ -26,13 +26,10 @@ func modsDir(targetDir string) string {
 }
 
 func isSafeModFilename(name string) bool {
-	if name == "" || filepath.IsAbs(name) {
+	if name == "" || name == "." || name == ".." || filepath.IsAbs(name) {
 		return false
 	}
 	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
-		return false
-	}
-	if strings.Contains(name, "..") {
 		return false
 	}
 	return strings.HasSuffix(strings.ToLower(name), ".jar")

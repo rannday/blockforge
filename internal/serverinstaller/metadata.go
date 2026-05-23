@@ -1,6 +1,7 @@
 package serverinstaller
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -49,14 +50,14 @@ func resolveManifestSource(targetDir, cliSource string) (string, error) {
 	data, err := os.ReadFile(savedManifestURLPath(targetDir))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("manifest URL required on first install; pass --manifest URL")
+			return "", fmt.Errorf("manifest source required on first install; pass --manifest SOURCE")
 		}
 		return "", fmt.Errorf("read saved manifest source: %w", err)
 	}
 
 	saved := strings.TrimSpace(string(data))
 	if saved == "" {
-		return "", fmt.Errorf("manifest URL required on first install; pass --manifest URL")
+		return "", fmt.Errorf("manifest source required on first install; pass --manifest SOURCE")
 	}
 	return normalizeManifestSource(saved)
 }
@@ -153,7 +154,12 @@ func WriteInstallDiagnostics(targetDir string, manifest Manifest) error {
 }
 
 func FetchRemoteManifest(rawURL string) (Manifest, error) {
-	raw, err := downloadURLToBytes(rawURL)
+	return fetchRemoteManifest(context.Background(), defaultDeps, rawURL)
+}
+
+func fetchRemoteManifest(ctx context.Context, deps runtimeDeps, rawURL string) (Manifest, error) {
+	deps = deps.withDefaults()
+	raw, err := downloadURLToBytesCtx(ctx, deps, rawURL)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("fetch manifest: %w", err)
 	}
