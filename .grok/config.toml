@@ -1,0 +1,25 @@
+# Balanced permissions for normal development work.
+[permission]
+allow = [
+  "Read",
+  "Grep",
+  "Edit",
+  "Bash(git *)",
+  "Bash(go test *)",
+  "Bash(go build *)",
+  "Bash(go vet *)",
+  "Bash(go fmt *)",
+  "Bash(make *)",
+  "Bash(mage *)",
+  "Bash(task *)",
+  "Bash(just *)",
+  "MCPTool(fff__*)",
+]
+ask = [
+  "Bash(curl *)",
+  "Bash(wget *)",
+  "Bash(ssh *)",
+  "Bash(npm *)",
+  "Bash(pip *)",
+  "Bash(docker *)",
+]
